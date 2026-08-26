@@ -11,6 +11,8 @@ mod computer;
 mod config_edit_notice;
 mod conversation_search;
 mod debug_socket;
+/// Shared #604 destructive-command gate (used by `bash` and `computer` scripting).
+mod destructive_gate;
 mod discover;
 mod discover_secrets;
 mod edit;

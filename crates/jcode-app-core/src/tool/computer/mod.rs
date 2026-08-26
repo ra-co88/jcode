@@ -122,6 +122,10 @@ struct ComputerInput {
     /// For mutating actions: resolve and report the target without acting.
     #[serde(default)]
     dry_run: Option<bool>,
+    /// Only when re-issuing a `run_applescript`/`run_jxa` script the destructive
+    /// gate refused (SEC-02): explain which user request it serves.
+    #[serde(default)]
+    justification: Option<String>,
 }
 
 /// Cap a tool output's text so a huge AX tree / clipboard / OCR dump cannot
@@ -245,27 +249,29 @@ impl Tool for ComputerTool {
                 "timeout_ms": { "type": "integer" },
                 "region": { "type": "array", "items": { "type": "number" }, "description": "ocr region [x,y,w,h]; omit for full screen." },
                 "level": { "type": "number", "description": "set_brightness 0..1." },
-                "dry_run": { "type": "boolean", "description": "Mutating actions: report intended action without doing it." }
+                "dry_run": { "type": "boolean", "description": "Mutating actions: report intended action without doing it." },
+                "justification": { "type": "string", "description": "Only when re-issuing a run_applescript/run_jxa script the destructive gate refused: explain which user request it serves." }
             }
         })
     }
 
-    async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
+    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let parsed: ComputerInput =
             serde_json::from_value(input).context("invalid `macos_computer_use` tool input")?;
-        tokio::task::spawn_blocking(move || run(parsed))
+        let working_dir = ctx.working_dir.clone();
+        tokio::task::spawn_blocking(move || run(parsed, working_dir))
             .await
             .context("macos_computer_use tool task panicked")?
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn run(_input: ComputerInput) -> Result<ToolOutput> {
+fn run(_input: ComputerInput, _working_dir: Option<std::path::PathBuf>) -> Result<ToolOutput> {
     bail!("The `macos_computer_use` tool is only supported on macOS.")
 }
 
 #[cfg(target_os = "macos")]
-fn run(input: ComputerInput) -> Result<ToolOutput> {
+fn run(input: ComputerInput, working_dir: Option<std::path::PathBuf>) -> Result<ToolOutput> {
     let action = input.action.as_str();
 
     // dry_run: for mutating actions, report the intended target and stop.
@@ -276,13 +282,17 @@ fn run(input: ComputerInput) -> Result<ToolOutput> {
         )));
     }
 
-    let result = dispatch(action, &input);
+    let result = dispatch(action, &input, working_dir);
     // Cap large textual outputs to protect context (images are unaffected).
     result.map(|o| cap_output(o, 16_000))
 }
 
 #[cfg(target_os = "macos")]
-fn dispatch(action: &str, input: &ComputerInput) -> Result<ToolOutput> {
+fn dispatch(
+    action: &str,
+    input: &ComputerInput,
+    working_dir: Option<std::path::PathBuf>,
+) -> Result<ToolOutput> {
     match action {
         // ---- discovery & setup ----
         "discover" => discover::discover(input.category.as_deref()),
@@ -463,6 +473,14 @@ fn dispatch(action: &str, input: &ComputerInput) -> Result<ToolOutput> {
                 .script
                 .as_deref()
                 .context("run_applescript requires `script`")?;
+            // SEC-02: apply the shipped #604 destructive gate to scripting.
+            if let Some(refusal) = super::destructive_gate::applescript_destructive_refusal(
+                s,
+                input.justification.as_deref(),
+                working_dir,
+            ) {
+                bail!(refusal);
+            }
             sys::run_applescript(s)
         }
         "run_jxa" => {
@@ -470,6 +488,14 @@ fn dispatch(action: &str, input: &ComputerInput) -> Result<ToolOutput> {
                 .script
                 .as_deref()
                 .context("run_jxa requires `script`")?;
+            // SEC-02: apply the shipped #604 destructive gate to scripting.
+            if let Some(refusal) = super::destructive_gate::applescript_destructive_refusal(
+                s,
+                input.justification.as_deref(),
+                working_dir,
+            ) {
+                bail!(refusal);
+            }
             sys::run_jxa(s)
         }
         "wait_for" => {
