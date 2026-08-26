@@ -433,13 +433,16 @@ pub async fn wait_for_callback_async_on_listener(
 /// Perform OAuth login for Claude
 pub async fn login_claude(no_browser: bool) -> Result<OAuthTokens> {
     let (verifier, challenge) = generate_pkce();
+    // SEC-01: the CSRF `state` is independent of the PKCE verifier. The verifier
+    // is a client secret and must never appear in the authorization URL.
+    let state = generate_state();
     if let Ok(code) = std::env::var("JCODE_CLAUDE_AUTH_CODE") {
         let trimmed = code.trim();
         if trimmed.is_empty() {
             anyhow::bail!("JCODE_CLAUDE_AUTH_CODE is set but empty");
         }
         eprintln!("Exchanging code for tokens...");
-        return exchange_claude_code(&verifier, trimmed, claude::REDIRECT_URI).await;
+        return exchange_claude_code(&verifier, &state, trimmed, claude::REDIRECT_URI).await;
     }
 
     if !std::io::stdin().is_terminal() {
@@ -453,8 +456,8 @@ pub async fn login_claude(no_browser: bool) -> Result<OAuthTokens> {
         let port = listener.local_addr()?.port();
 
         let redirect_uri = format!("http://localhost:{}/callback", port);
-        let auth_url = claude_auth_url(&redirect_uri, &challenge, &verifier);
-        let manual_auth_url = claude_auth_url(claude::REDIRECT_URI, &challenge, &verifier);
+        let auth_url = claude_auth_url(&redirect_uri, &challenge, &state);
+        let manual_auth_url = claude_auth_url(claude::REDIRECT_URI, &challenge, &state);
 
         eprintln!("\nOpen this URL in your browser:\n");
         eprintln!("{}\n", auth_url);
@@ -485,13 +488,13 @@ pub async fn login_claude(no_browser: bool) -> Result<OAuthTokens> {
         if browser_opened {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(120),
-                wait_for_callback_async_on_listener(listener, &verifier),
+                wait_for_callback_async_on_listener(listener, &state),
             )
             .await
             {
                 Ok(Ok(code)) => {
                     eprintln!("Received callback. Exchanging code for tokens...");
-                    return exchange_claude_code(&verifier, &code, &redirect_uri).await;
+                    return exchange_claude_code(&verifier, &state, &code, &redirect_uri).await;
                 }
                 Ok(Err(err)) => {
                     eprintln!(
@@ -515,11 +518,11 @@ pub async fn login_claude(no_browser: bool) -> Result<OAuthTokens> {
         }
         eprintln!("Exchanging code for tokens...");
         let selected_redirect_uri = claude_redirect_uri_for_input(trimmed, &redirect_uri);
-        return exchange_claude_code(&verifier, trimmed, &selected_redirect_uri).await;
+        return exchange_claude_code(&verifier, &state, trimmed, &selected_redirect_uri).await;
     }
 
     // Last-resort manual flow if localhost callback binding is unavailable.
-    let auth_url = claude_auth_url(claude::REDIRECT_URI, &challenge, &verifier);
+    let auth_url = claude_auth_url(claude::REDIRECT_URI, &challenge, &state);
 
     eprintln!("\nOpen this URL in your browser:\n");
     eprintln!("{}\n", auth_url);
@@ -546,7 +549,7 @@ pub async fn login_claude(no_browser: bool) -> Result<OAuthTokens> {
     }
 
     eprintln!("Exchanging code for tokens...");
-    exchange_claude_code(&verifier, trimmed, claude::REDIRECT_URI).await
+    exchange_claude_code(&verifier, &state, trimmed, claude::REDIRECT_URI).await
 }
 
 pub fn claude_auth_url(redirect_uri: &str, challenge: &str, state: &str) -> String {
@@ -646,21 +649,24 @@ fn looks_like_cloudflare_challenge(text: &str) -> bool {
 async fn exchange_claude_code_at_url(
     token_url: &str,
     verifier: &str,
+    expected_state: &str,
     input: &str,
     redirect_uri: &str,
 ) -> Result<OAuthTokens> {
     let (code, state_from_callback) = parse_claude_code_input(input)?;
-    // Anthropic's token endpoint expects `state`.
-    // We bind state to the PKCE verifier in the auth URL; if callback input
-    // includes a non-empty state, it must match to avoid CSRF or stale-code mixups.
+    // Anthropic's token endpoint expects `state`. The authorization URL now
+    // carries an independent CSRF `state` (SEC-01): the PKCE `code_verifier` is
+    // never placed in the URL. If the callback input includes a non-empty
+    // state, it must match the state we generated to avoid CSRF or stale-code
+    // mixups.
     let state = match state_from_callback.as_deref().filter(|s| !s.is_empty()) {
-        Some(callback_state) if callback_state != verifier => {
+        Some(callback_state) if callback_state != expected_state => {
             anyhow::bail!(
                 "OAuth state mismatch. Start login again and use the latest callback/code."
             )
         }
         Some(callback_state) => callback_state.to_string(),
-        None => verifier.to_string(),
+        None => expected_state.to_string(),
     };
 
     #[derive(Serialize)]
@@ -730,10 +736,18 @@ async fn exchange_claude_code_at_url(
 /// `input` can be a plain code, a URL/query containing `code=`, or `code#state`.
 pub async fn exchange_claude_code(
     verifier: &str,
+    expected_state: &str,
     input: &str,
     redirect_uri: &str,
 ) -> Result<OAuthTokens> {
-    exchange_claude_code_at_url(claude::TOKEN_URL, verifier, input, redirect_uri).await
+    exchange_claude_code_at_url(
+        claude::TOKEN_URL,
+        verifier,
+        expected_state,
+        input,
+        redirect_uri,
+    )
+    .await
 }
 
 pub fn openai_auth_url(redirect_uri: &str, challenge: &str, state: &str) -> String {

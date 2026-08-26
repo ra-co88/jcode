@@ -869,11 +869,14 @@ impl App {
         let hash = hasher.finalize();
         let challenge = URL_SAFE_NO_PAD.encode(hash);
 
+        // SEC-01: independent CSRF state; the PKCE verifier must never appear in
+        // the authorization URL or be used as the OAuth `state`.
+        let state = crate::auth::oauth::generate_state_public();
+
         // Try a loopback callback first so the user never has to copy/paste the
-        // authorization code (mirrors the OpenAI/Gemini flows). Claude uses the
-        // PKCE verifier as the OAuth `state`, so we wait for that on the
-        // listener. If binding fails we fall back to manual paste with the
-        // hosted redirect page.
+        // authorization code (mirrors the OpenAI/Gemini flows). We wait for our
+        // generated `state` on the listener. If binding fails we fall back to
+        // manual paste with the hosted redirect page.
         let callback_listener = crate::auth::oauth::bind_callback_listener(0).ok();
         let callback_port = callback_listener
             .as_ref()
@@ -885,13 +888,13 @@ impl App {
             Some(port) if callback_available => {
                 let redirect_uri = format!("http://localhost:{}/callback", port);
                 let auth_url =
-                    crate::auth::oauth::claude_auth_url(&redirect_uri, &challenge, &verifier);
+                    crate::auth::oauth::claude_auth_url(&redirect_uri, &challenge, &state);
                 (auth_url, redirect_uri)
             }
             _ => {
                 let redirect_uri = crate::auth::oauth::claude::REDIRECT_URI.to_string();
                 let auth_url =
-                    crate::auth::oauth::claude_auth_url(&redirect_uri, &challenge, &verifier);
+                    crate::auth::oauth::claude_auth_url(&redirect_uri, &challenge, &state);
                 (auth_url, redirect_uri)
             }
         };
@@ -915,11 +918,13 @@ impl App {
         // identically.
         if let (Some(listener), true) = (callback_listener, callback_available) {
             let verifier_clone = verifier.clone();
+            let state_clone = state.clone();
             let label_clone = label.to_string();
             let redirect_clone = redirect_uri.clone();
             tokio::spawn(async move {
                 match Self::claude_login_callback(
                     verifier_clone,
+                    state_clone,
                     label_clone,
                     redirect_clone,
                     listener,
@@ -979,6 +984,7 @@ impl App {
         }
         self.begin_pending_login(PendingLogin::ClaudeAccount {
             verifier,
+            expected_state: state,
             label: label.to_string(),
             redirect_uri: if callback_available {
                 Some(redirect_uri)
@@ -990,20 +996,22 @@ impl App {
 
     async fn claude_login_callback(
         verifier: String,
+        expected_state: String,
         label: String,
         redirect_uri: String,
         listener: tokio::net::TcpListener,
     ) -> Result<String, String> {
-        // Claude uses the PKCE verifier as the OAuth `state` value.
+        // SEC-01: wait for our independent CSRF state, not the PKCE verifier.
         let code = tokio::time::timeout(
             std::time::Duration::from_secs(300),
-            crate::auth::oauth::wait_for_callback_async_on_listener(listener, &verifier),
+            crate::auth::oauth::wait_for_callback_async_on_listener(listener, &expected_state),
         )
         .await
         .map_err(|_| "Login timed out after 5 minutes. Please try again.".to_string())?
         .map_err(|e| format!("Callback failed: {}", e))?;
 
-        Self::claude_token_exchange(verifier, code, &label, Some(redirect_uri)).await
+        Self::claude_token_exchange(verifier, expected_state, code, &label, Some(redirect_uri))
+            .await
     }
 
     pub(super) fn switch_account(&mut self, label: &str) {
@@ -2062,6 +2070,7 @@ impl App {
         match pending {
             PendingLogin::ClaudeAccount {
                 verifier,
+                expected_state,
                 label,
                 redirect_uri,
             } => {
@@ -2071,6 +2080,7 @@ impl App {
                 tokio::spawn(async move {
                     match Self::claude_token_exchange(
                         verifier,
+                        expected_state,
                         input_owned,
                         &label_clone,
                         redirect_uri,
@@ -3327,6 +3337,7 @@ impl App {
 
     async fn claude_token_exchange(
         verifier: String,
+        expected_state: String,
         input: String,
         label: &str,
         redirect_uri: Option<String>,
@@ -3335,10 +3346,14 @@ impl App {
             redirect_uri.unwrap_or_else(|| crate::auth::oauth::claude::REDIRECT_URI.to_string());
         let redirect_uri =
             crate::auth::oauth::claude_redirect_uri_for_input(input.trim(), &fallback_redirect_uri);
-        let oauth_tokens =
-            crate::auth::oauth::exchange_claude_code(&verifier, input.trim(), &redirect_uri)
-                .await
-                .map_err(|e| e.to_string())?;
+        let oauth_tokens = crate::auth::oauth::exchange_claude_code(
+            &verifier,
+            &expected_state,
+            input.trim(),
+            &redirect_uri,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         crate::auth::oauth::save_claude_tokens_for_account(&oauth_tokens, label)
             .map_err(|e| format!("Failed to save tokens: {}", e))?;

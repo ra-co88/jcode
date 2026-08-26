@@ -95,12 +95,15 @@ pub(super) async fn start_scriptable_login(
         LoginProviderTarget::Claude => {
             let label = auth::claude::login_target_label(account_label)?;
             let (verifier, challenge) = auth::oauth::generate_pkce_public();
+            // SEC-01: independent CSRF state; the PKCE verifier stays client-side.
+            let state = auth::oauth::generate_state_public();
             let redirect_uri = auth::oauth::claude::REDIRECT_URI.to_string();
-            let auth_url = auth::oauth::claude_auth_url(&redirect_uri, &challenge, &verifier);
+            let auth_url = auth::oauth::claude_auth_url(&redirect_uri, &challenge, &state);
             (
                 PendingScriptableLogin::Claude {
                     account_label: label,
                     verifier,
+                    state,
                     redirect_uri,
                 },
                 auth_url,
@@ -109,6 +112,7 @@ pub(super) async fn start_scriptable_login(
                 PendingScriptableLogin::Claude {
                     account_label: String::new(),
                     verifier: String::new(),
+                    state: String::new(),
                     redirect_uri: String::new(),
                 }
                 .default_expires_at_ms(),
@@ -322,6 +326,7 @@ pub(super) async fn complete_scriptable_claude_login(
     let PendingScriptableLogin::Claude {
         account_label,
         verifier,
+        state,
         redirect_uri,
     } = load_pending_login(&pending_path, "claude")?
     else {
@@ -334,7 +339,8 @@ pub(super) async fn complete_scriptable_claude_login(
     let selected_redirect_uri =
         auth::oauth::claude_redirect_uri_for_input(&raw_input, &redirect_uri);
     let tokens =
-        auth::oauth::exchange_claude_code(&verifier, &raw_input, &selected_redirect_uri).await?;
+        auth::oauth::exchange_claude_code(&verifier, &state, &raw_input, &selected_redirect_uri)
+            .await?;
     auth::oauth::save_claude_tokens_for_account(&tokens, &account_label)?;
     let profile_email =
         auth::oauth::update_claude_account_profile(&account_label, &tokens.access_token)
