@@ -21,3 +21,10 @@ captures/
 /*.avif
 /*.mp4
 /*.png
+.personal/
+
+# Orion-OS local working context (memory bank, agent config) — never committed.
+.agents/
+
+# macOS Finder metadata
+.DS_Store
