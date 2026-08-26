@@ -149,6 +149,86 @@ fn malformed_config_preserves_last_good_and_backs_up() {
         "backup must hold the corrupt bytes"
     );
 
+    // The corrupt backup may contain API keys, so it must be owner-only, and it
+    // must never sit at default perms even briefly (created 0o600, not hardened
+    // after the write).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&backup)
+            .expect("stat backup")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "corrupt-config backup must be owner-only");
+    }
+
+    // REL-02 across a restart: a fresh process has no in-process snapshot. After
+    // clearing it, load() must recover from the on-disk config.toml.last-good
+    // written during the earlier good load — NOT fall back to defaults.
+    Config::clear_in_process_last_good_for_tests();
+    let last_good_snapshot = path.with_extension("toml.last-good");
+    assert!(
+        last_good_snapshot.exists(),
+        "a good load must persist {last_good_snapshot:?} for restart recovery"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&last_good_snapshot)
+            .expect("stat snapshot")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "last-good snapshot must be owner-only");
+    }
+    Config::invalidate_cache();
+    let after_restart = Config::load();
+    assert!(
+        after_restart.display.centered,
+        "on a fresh process with a corrupt config, last-good must be recovered from disk"
+    );
+
+    match prev_home {
+        Some(prev) => crate::env::set_var("JCODE_HOME", prev),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+    Config::invalidate_cache();
+}
+
+/// RC-01 inter-process: `mutate` acquires and releases the advisory file lock
+/// without deadlocking, and the lock file is created owner-only. (True
+/// cross-process serialization is exercised by the flock itself; here we prove
+/// the lock is taken, reentered across sequential calls, and hardened.)
+#[test]
+fn config_write_lock_file_is_created_and_reusable() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    crate::env::set_var("JCODE_HOME", dir.path());
+    Config::invalidate_cache();
+
+    // Two sequential mutations must both succeed (lock released between them).
+    Config::set_display_centered(true).expect("first mutate");
+    Config::set_display_centered(false).expect("second mutate after lock release");
+
+    let path = Config::path().expect("config path");
+    let lock = path.with_extension("toml.lock");
+    assert!(
+        lock.exists(),
+        "inter-process lock file should exist at {lock:?}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&lock)
+            .expect("stat lock")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "config lock file must be owner-only");
+    }
+
     match prev_home {
         Some(prev) => crate::env::set_var("JCODE_HOME", prev),
         None => crate::env::remove_var("JCODE_HOME"),

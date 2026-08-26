@@ -17,6 +17,76 @@ static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
 /// settings (including security opt-outs). `None` until the first good load.
 static LAST_GOOD_CONFIG: Mutex<Option<Config>> = Mutex::new(None);
 
+/// Cross-process advisory lock over config writes (RC-01).
+///
+/// Held for the whole read-modify-write in [`Config::mutate_if`] so two
+/// separate jcode processes serialize their `load -> mutate -> save` cycles and
+/// cannot lose one another's updates. On Unix this is a `flock(LOCK_EX)` on a
+/// dedicated `config.toml.lock` file; on other platforms it is a no-op and only
+/// the in-process mutex applies (documented limitation). Acquisition is
+/// best-effort: a lock failure logs and proceeds rather than blocking config
+/// writes, since the atomic rename still prevents a torn file.
+struct ConfigFileLock {
+    #[cfg(unix)]
+    file: Option<std::fs::File>,
+}
+
+impl ConfigFileLock {
+    fn acquire() -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let file = Config::path().and_then(|p| {
+                let lock_path = p.with_extension("toml.lock");
+                if let Some(parent) = lock_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .write(true)
+                    .open(&lock_path)
+                    .ok()?;
+                // Harden the lock file (it lives beside the secret-bearing
+                // config); ignore failures.
+                let _ = jcode_core::fs::set_permissions_owner_only(&lock_path);
+                Some(f)
+            });
+            if let Some(ref f) = file {
+                // Blocking exclusive advisory lock. EINTR is retried by flock.
+                let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
+                if rc != 0 {
+                    crate::logging::warn(
+                        "config: could not acquire inter-process write lock; proceeding                          with in-process lock only",
+                    );
+                }
+            }
+            ConfigFileLock { file }
+        }
+        #[cfg(not(unix))]
+        {
+            // No portable advisory lock wired here yet; the in-process mutex
+            // still serializes threads. Cross-process races on non-Unix remain
+            // possible (see SECURITY/docs). Kept explicit rather than silent.
+            ConfigFileLock {}
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ConfigFileLock {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        if let Some(ref f) = self.file {
+            // Release the advisory lock; closing the fd would also drop it, but
+            // be explicit so the unlock is visible and prompt.
+            unsafe {
+                libc::flock(f.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+}
+
 impl Config {
     /// Get the config file path
     pub fn path() -> Option<PathBuf> {
@@ -69,16 +139,83 @@ impl Config {
         }
     }
 
-    /// Snapshot the most recently parsed-good config for REL-02 fallback.
+    /// Snapshot the most recently parsed-good config for REL-02 fallback, both
+    /// in-process and on disk.
+    ///
+    /// The in-process copy protects a running session; the on-disk copy
+    /// (`config.toml.last-good`) preserves the last known-good settings across
+    /// application restarts, so a fresh process that finds `config.toml`
+    /// corrupt recovers real settings instead of silently reverting to
+    /// `Config::default()`. The disk copy is a byte-for-byte snapshot of the
+    /// valid file (comments/formatting preserved) written 0o600 atomically.
     fn remember_last_good(cfg: &Self) {
         if let Ok(mut guard) = LAST_GOOD_CONFIG.lock() {
             *guard = Some(cfg.clone());
         }
+        // Persist a raw snapshot of the just-validated file. Copy the on-disk
+        // bytes rather than re-serializing so comments and layout survive.
+        let Some(path) = Self::path() else { return };
+        let Ok(raw) = std::fs::read(&path) else {
+            return;
+        };
+        let snapshot = Self::last_good_path();
+        // Skip the write when the snapshot already matches, to avoid churn.
+        if std::fs::read(&snapshot).ok().as_deref() == Some(raw.as_slice()) {
+            return;
+        }
+        if let Err(e) = Self::write_atomic_hardened(&snapshot, &raw) {
+            crate::logging::warn(&format!(
+                "Failed to persist last-good config snapshot to {}: {}",
+                snapshot.display(),
+                e
+            ));
+        }
     }
 
-    /// The last config that parsed successfully in this process, if any.
+    /// Path to the on-disk last-good config snapshot (REL-02).
+    fn last_good_path() -> std::path::PathBuf {
+        // Fall back to a relative name only if the primary path is unavailable;
+        // callers guard on that separately.
+        Self::path()
+            .map(|p| p.with_extension("toml.last-good"))
+            .unwrap_or_else(|| std::path::PathBuf::from("config.toml.last-good"))
+    }
+
+    /// Test-only: clear the in-process last-good snapshot to simulate a fresh
+    /// process, so tests can exercise the on-disk restore path (REL-02).
+    #[cfg(test)]
+    pub(crate) fn clear_in_process_last_good_for_tests() {
+        if let Ok(mut guard) = LAST_GOOD_CONFIG.lock() {
+            *guard = None;
+        }
+    }
+
+    /// The last config that parsed successfully — the in-process snapshot if
+    /// present, otherwise the on-disk `config.toml.last-good` from a prior run.
+    ///
+    /// The on-disk fallback is what makes REL-02 survive restarts: on a fresh
+    /// process with a malformed `config.toml`, this returns the persisted
+    /// known-good settings instead of `None` (which would become defaults).
     fn last_good() -> Option<Self> {
-        LAST_GOOD_CONFIG.lock().ok().and_then(|guard| guard.clone())
+        if let Some(cfg) = LAST_GOOD_CONFIG.lock().ok().and_then(|g| g.clone()) {
+            return Some(cfg);
+        }
+        // Restore from the on-disk snapshot written by a previous good load.
+        let snapshot = Self::last_good_path();
+        let content = std::fs::read_to_string(&snapshot).ok()?;
+        match toml::from_str::<Self>(&content) {
+            Ok(mut cfg) => {
+                cfg.display.apply_legacy_compat();
+                cfg.repair_frozen_sponsors_optout(&content);
+                crate::logging::warn(&format!(
+                    "config.toml was unreadable; recovered last-good settings from {}.",
+                    snapshot.display()
+                ));
+                Some(cfg)
+            }
+            // A corrupt snapshot is useless; let the caller fall through to defaults.
+            Err(_) => None,
+        }
     }
 
     /// Copy a corrupt config file aside so the user can inspect/repair it and so
@@ -96,13 +233,20 @@ impl Config {
         if std::fs::read(&backup).ok().as_deref() == Some(corrupt.as_slice()) {
             return; // already backed up this exact corrupt content
         }
-        if std::fs::write(&backup, &corrupt).is_ok() {
-            crate::storage::harden_secret_file_permissions(&backup);
-            crate::logging::warn(&format!(
+        // Use the same secure temp-file-then-rename path as save() so the backup
+        // is created 0o600 BEFORE the (possibly key-bearing) corrupt bytes are
+        // written — never a window at the default umask (SEC-04 hardening gap).
+        match Self::write_atomic_hardened(&backup, &corrupt) {
+            Ok(()) => crate::logging::warn(&format!(
                 "Backed up unparseable config to {} so it can be repaired ({}).",
                 backup.display(),
                 error
-            ));
+            )),
+            Err(e) => crate::logging::error(&format!(
+                "Failed to back up unparseable config to {}: {}",
+                backup.display(),
+                e
+            )),
         }
     }
 
@@ -213,8 +357,15 @@ impl Config {
     /// cycle under the write lock (RC-01). Returns `Ok(())` whether or not a
     /// write occurred.
     pub fn mutate_if(f: impl FnOnce(&mut Self) -> bool) -> anyhow::Result<()> {
+        // Intra-process: serialize threads cheaply.
         let _guard = CONFIG_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Load fresh from disk INSIDE the lock so we never mutate a stale copy.
+        // Inter-process (RC-01): hold an advisory file lock across the whole
+        // read-modify-write so two separate jcode processes cannot each load,
+        // edit disjoint fields, and clobber one another. Best-effort: if the
+        // lock cannot be taken we proceed (never worse than before, and the
+        // atomic rename still prevents a torn file).
+        let _flock = ConfigFileLock::acquire();
+        // Load fresh from disk INSIDE both locks so we never mutate a stale copy.
         let mut cfg = Self::load();
         if f(&mut cfg) {
             cfg.save_locked()?;
