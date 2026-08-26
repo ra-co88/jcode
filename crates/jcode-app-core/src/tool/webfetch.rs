@@ -39,6 +39,22 @@ impl WebFetchTool {
             .unwrap_or_else(|_| crate::provider::shared_http_client());
         Self { client }
     }
+
+    /// Build a no-redirect client that pins the guarded host to the exact IP the
+    /// SSRF guard validated (SEC-03 DNS-rebinding hardening). Returns `None`
+    /// when there is nothing to pin (literal-IP URL), so the caller uses the
+    /// default client. `resolve()` overrides DNS for this host only, so reqwest
+    /// connects to the checked address instead of re-resolving.
+    fn pinned_client(&self, target: &super::ssrf::GuardedTarget) -> Option<reqwest::Client> {
+        let host = target.host.as_deref()?;
+        let addr = target.pinned?;
+        reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (compatible; JCode/1.0)")
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve(host, addr)
+            .build()
+            .ok()
+    }
 }
 
 #[derive(Deserialize)]
@@ -95,13 +111,18 @@ impl Tool for WebFetchTool {
 
         // SEC-03: follow redirects manually, re-validating EVERY hop against the
         // SSRF guard so a public URL cannot 30x-redirect into loopback/private/
-        // metadata space (the pre-flight check alone would miss that).
+        // metadata space (the pre-flight check alone would miss that). For each
+        // hop we PIN the connection to the exact validated IP (reqwest
+        // `resolve()`), so the address we checked is the address connected to —
+        // closing the resolve-then-connect DNS-rebinding TOCTOU gap.
         let mut current_url = params.url.clone();
         let mut redirects = 0usize;
         let response = loop {
-            super::ssrf::guard_public_url(&current_url).await?;
-            let resp = self
-                .client
+            let target = super::ssrf::guard_public_url_pinned(&current_url).await?;
+            let client = self
+                .pinned_client(&target)
+                .unwrap_or_else(|| self.client.clone());
+            let resp = client
                 .get(&current_url)
                 .header(
                     reqwest::header::USER_AGENT,

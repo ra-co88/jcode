@@ -6,12 +6,15 @@
 //! (`169.254.169.254`) to read credentials. This module resolves a URL's host
 //! and refuses any destination that resolves to a non-public IP.
 //!
-//! Honest scope (cf. SEC-05): resolving here and connecting later leaves a
-//! TOCTOU/DNS-rebinding gap. We re-check every resolved address and reject if
-//! ANY is private, which closes the "one public + one private A record" trick;
-//! a fully hardened design would also pin the checked IP for the connection.
-//! Users who legitimately need to fetch internal hosts can be given an explicit
-//! allowlist escape hatch (not yet wired — call it out in the refusal).
+//! DNS-rebinding hardening: we re-check every resolved address and reject if
+//! ANY is private (defeats the "one public + one private A record" trick), and
+//! the caller pins the connection to the validated address via
+//! [`guard_public_url_pinned`] + reqwest `resolve()`, so the IP we checked is
+//! the IP actually connected to — closing the resolve-then-connect TOCTOU gap
+//! for the common case. Residual limits (cf. SEC-05): a hostile custom DNS that
+//! returns different sets per lookup is bounded by pinning, but proxies and
+//! any code path that bypasses the pinned client are not covered. There is no
+//! allowlist escape hatch yet for legitimately-internal hosts.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -19,6 +22,23 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 /// every returned address. Returns `Ok(())` when safe, or `Err` with a clear,
 /// user-facing refusal naming the blocked class.
 pub(crate) async fn guard_public_url(raw_url: &str) -> anyhow::Result<()> {
+    guard_public_url_pinned(raw_url).await.map(|_| ())
+}
+
+/// What a passing SSRF check resolved to, so the caller can *pin* the
+/// connection to the exact validated address (closing the TOCTOU/DNS-rebinding
+/// gap: reqwest reuses this address instead of re-resolving at connect time).
+pub(crate) struct GuardedTarget {
+    /// The hostname to pin (only set when DNS was used, not for literal IPs).
+    pub host: Option<String>,
+    /// A validated socket address to pin the host to. `None` for a literal-IP
+    /// URL, which needs no pinning because there is no name to re-resolve.
+    pub pinned: Option<std::net::SocketAddr>,
+}
+
+/// Like [`guard_public_url`] but returns a [`GuardedTarget`] so the caller can
+/// pin the connection to a validated IP.
+pub(crate) async fn guard_public_url_pinned(raw_url: &str) -> anyhow::Result<GuardedTarget> {
     let url = url::Url::parse(raw_url)
         .map_err(|e| anyhow::anyhow!("Could not parse URL for safety check: {e}"))?;
 
@@ -31,11 +51,14 @@ pub(crate) async fn guard_public_url(raw_url: &str) -> anyhow::Result<()> {
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("URL has no host to validate."))?;
 
-    // A bracketed/!literal IP host is checked directly (no DNS). Otherwise
-    // resolve every A/AAAA record and reject if ANY is non-public.
+    // A bracketed/literal IP host is checked directly (no DNS, no pinning
+    // needed — there is no name that could be re-resolved to something else).
     if let Ok(ip) = host.parse::<IpAddr>() {
         reject_if_blocked(host, ip)?;
-        return Ok(());
+        return Ok(GuardedTarget {
+            host: None,
+            pinned: None,
+        });
     }
 
     // Guard against obviously-internal names even if resolution is skipped by a
@@ -51,18 +74,25 @@ pub(crate) async fn guard_public_url(raw_url: &str) -> anyhow::Result<()> {
     // Resolve. `lookup_host` needs a port; the scheme default is fine since we
     // only care about the IP.
     let port = url.port_or_known_default().unwrap_or(443);
-    let mut resolved = tokio::net::lookup_host((host, port))
+    let resolved: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
         .await
         .map_err(|e| anyhow::anyhow!("Could not resolve `{host}` for safety check: {e}"))?
-        .peekable();
+        .collect();
 
-    if resolved.peek().is_none() {
+    if resolved.is_empty() {
         anyhow::bail!("`{host}` did not resolve to any address.");
     }
-    for addr in resolved {
+    // Reject if ANY resolved address is non-public (defeats "one public + one
+    // private A record" rebinding).
+    for addr in &resolved {
         reject_if_blocked(host, addr.ip())?;
     }
-    Ok(())
+    // Pin the connection to the first validated address so the IP we checked is
+    // the IP actually connected to, closing the resolve-then-connect TOCTOU gap.
+    Ok(GuardedTarget {
+        host: Some(host.to_string()),
+        pinned: resolved.into_iter().next(),
+    })
 }
 
 /// Reject a single resolved address if it is not a public, routable unicast IP.
@@ -203,5 +233,24 @@ mod tests {
             guard_public_url("ftp://example.com/").await.is_err(),
             "non-http scheme rejected"
         );
+    }
+
+    #[tokio::test]
+    async fn pinned_guard_rejects_internal_and_needs_no_pin_for_literal_public_ip() {
+        // Internal targets are rejected by the pinned variant too.
+        assert!(
+            guard_public_url_pinned("http://169.254.169.254/")
+                .await
+                .is_err()
+        );
+        assert!(guard_public_url_pinned("http://10.0.0.1/").await.is_err());
+
+        // A literal public IP passes and needs no pinning (there is no name to
+        // re-resolve), so `host`/`pinned` are None.
+        let t = guard_public_url_pinned("http://1.1.1.1/")
+            .await
+            .expect("public literal IP should pass");
+        assert!(t.host.is_none(), "literal-IP URL needs no host pin");
+        assert!(t.pinned.is_none(), "literal-IP URL needs no pinned address");
     }
 }
