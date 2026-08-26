@@ -824,6 +824,10 @@ mod tests;
 #[path = "config_color_tests.rs"]
 mod color_tests;
 
+#[cfg(test)]
+#[path = "config_atomic_save_tests.rs"]
+mod atomic_save_tests;
+
 /// Whether integration discovery settings carry no information beyond the shipped
 /// default, so `[sponsors]` can be left out of written config files.
 ///
