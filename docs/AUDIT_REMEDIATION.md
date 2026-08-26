@@ -42,18 +42,24 @@ SearXNG endpoint is intentionally **not** guarded — it is operator-configured
 (config/env), commonly self-hosted on localhost/LAN, so the operator config is
 the trust boundary, not a model-influenced input.
 
-### RC-01 — Atomic, race-free config writes — DELIVERED for intra- **and** inter-process
+### RC-01 — Atomic, race-free config writes — DELIVERED, intra- **and** inter-process on Unix + Windows
 `save()` writes via temp-file + fsync + atomic rename (crash-safe). All ~19
 mutation helpers go through `mutate()`/`mutate_if()`, which hold both a
-process-local `Mutex` **and** a cross-process advisory file lock
-(`flock(LOCK_EX)` on `config.toml.lock`, Unix) across the whole
-load-modify-save, so two separate jcode processes cannot lose one another's
-updates.
+process-local `Mutex` **and** a cross-process advisory lock on
+`config.toml.lock` across the whole load-modify-save, so two separate jcode
+processes cannot lose one another's updates. The cross-process lock is
+`flock(LOCK_EX)` on Unix and `LockFileEx(LOCKFILE_EXCLUSIVE_LOCK)` (released
+with `UnlockFileEx`) on Windows, via the `windows-sys` dependency `jcode-base`
+already carries.
 
-**Scope (honest):** the cross-process lock is implemented on **Unix**. On
-non-Unix platforms only the in-process mutex applies (documented in code); a
-cross-process race remains possible there until a Windows `LockFileEx` path is
-added.
+**Scope (honest):** covered on Unix and Windows — the two platforms jcode
+ships on. Any other target (e.g. a hypothetical WASI build) has no advisory-lock
+API wired and falls back to the in-process mutex only; that branch is explicit
+in code, not silent. Acquisition is best-effort: a lock failure logs and
+proceeds (never worse than before; the atomic rename still prevents a torn
+file). The Windows path is API-verified against windows-sys 0.59 but is compiled
+and runtime-tested only on the platform used for this work (macOS); it needs a
+Windows CI leg to be runtime-verified.
 
 ### REL-01 — Bounded network reconnect — DELIVERED
 `wait_until_probably_online()` is bounded (default 300s ceiling), returns

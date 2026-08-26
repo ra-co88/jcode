@@ -27,62 +27,120 @@ static LAST_GOOD_CONFIG: Mutex<Option<Config>> = Mutex::new(None);
 /// best-effort: a lock failure logs and proceeds rather than blocking config
 /// writes, since the atomic rename still prevents a torn file.
 struct ConfigFileLock {
-    #[cfg(unix)]
+    /// Held open for the lock's lifetime on Unix and Windows; `None` when the
+    /// lock file could not be opened or on platforms with no advisory-lock
+    /// path (then only the in-process mutex applies). Unused otherwise.
+    #[cfg_attr(not(any(unix, windows)), allow(dead_code))]
     file: Option<std::fs::File>,
 }
 
 impl ConfigFileLock {
+    /// Open (creating if needed) and harden the `config.toml.lock` file.
+    fn open_lock_file() -> Option<std::fs::File> {
+        let lock_path = Config::path()?.with_extension("toml.lock");
+        if let Some(parent) = lock_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .ok()?;
+        // Harden the lock file (it lives beside the secret-bearing config);
+        // ignore failures.
+        let _ = jcode_core::fs::set_permissions_owner_only(&lock_path);
+        Some(f)
+    }
+
     fn acquire() -> Self {
+        let file = Self::open_lock_file();
+
         #[cfg(unix)]
-        {
+        if let Some(ref f) = file {
             use std::os::unix::io::AsRawFd;
-            let file = Config::path().and_then(|p| {
-                let lock_path = p.with_extension("toml.lock");
-                if let Some(parent) = lock_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let f = std::fs::OpenOptions::new()
-                    .create(true)
-                    .truncate(false)
-                    .write(true)
-                    .open(&lock_path)
-                    .ok()?;
-                // Harden the lock file (it lives beside the secret-bearing
-                // config); ignore failures.
-                let _ = jcode_core::fs::set_permissions_owner_only(&lock_path);
-                Some(f)
-            });
-            if let Some(ref f) = file {
-                // Blocking exclusive advisory lock. EINTR is retried by flock.
-                let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
-                if rc != 0 {
-                    crate::logging::warn(
-                        "config: could not acquire inter-process write lock; proceeding                          with in-process lock only",
-                    );
-                }
+            // Blocking exclusive advisory lock. flock retries EINTR itself.
+            let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
+            if rc != 0 {
+                crate::logging::warn(
+                    "config: could not acquire inter-process write lock; proceeding \
+                     with in-process lock only",
+                );
             }
-            ConfigFileLock { file }
         }
-        #[cfg(not(unix))]
+
+        #[cfg(windows)]
+        if let Some(ref f) = file {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileEx};
+            use windows_sys::Win32::System::IO::OVERLAPPED;
+            // Blocking exclusive lock over the whole (0..u32::MAX,u32::MAX)
+            // range — the byte range is nominal since the file is empty; the
+            // lock is what serializes writers across processes.
+            let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+            let ok = unsafe {
+                LockFileEx(
+                    f.as_raw_handle() as _,
+                    LOCKFILE_EXCLUSIVE_LOCK,
+                    0,
+                    u32::MAX,
+                    u32::MAX,
+                    &mut overlapped,
+                )
+            };
+            if ok == 0 {
+                crate::logging::warn(
+                    "config: could not acquire inter-process write lock; proceeding \
+                     with in-process lock only",
+                );
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
         {
-            // No portable advisory lock wired here yet; the in-process mutex
-            // still serializes threads. Cross-process races on non-Unix remain
-            // possible (see SECURITY/docs). Kept explicit rather than silent.
-            ConfigFileLock {}
+            // No advisory-lock API wired for this platform; the in-process mutex
+            // still serializes threads. Kept explicit rather than silent.
+            let _ = &file;
         }
+
+        ConfigFileLock { file }
     }
 }
 
-#[cfg(unix)]
 impl Drop for ConfigFileLock {
     fn drop(&mut self) {
-        use std::os::unix::io::AsRawFd;
-        if let Some(ref f) = self.file {
+        let Some(ref f) = self.file else { return };
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
             // Release the advisory lock; closing the fd would also drop it, but
             // be explicit so the unlock is visible and prompt.
             unsafe {
                 libc::flock(f.as_raw_fd(), libc::LOCK_UN);
             }
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+            use windows_sys::Win32::System::IO::OVERLAPPED;
+            let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+            unsafe {
+                UnlockFileEx(
+                    f.as_raw_handle() as _,
+                    0,
+                    u32::MAX,
+                    u32::MAX,
+                    &mut overlapped,
+                );
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = f;
         }
     }
 }
