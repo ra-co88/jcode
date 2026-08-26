@@ -45,6 +45,10 @@ irm https://jcode.sh/install.ps1 | iex
 Need Homebrew, source builds, provider setup, or want an agent to set it up for you?
 [Jump to detailed installation](#detailed-installation).
 
+Installs and updates verify a SHA-256 checksum over HTTPS. For the full
+supply-chain trust model (what is and isn't verified, and how to install more
+cautiously), see [`SECURITY.md`](SECURITY.md).
+
 ---
 
 
