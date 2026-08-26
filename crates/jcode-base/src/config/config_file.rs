@@ -10,6 +10,13 @@ use std::sync::Mutex;
 /// interleavings.
 static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
+/// Last config that parsed successfully in this process (REL-02).
+///
+/// When a later reload hits a malformed file, we return this instead of
+/// `Config::default()` so a single TOML typo cannot silently wipe live user
+/// settings (including security opt-outs). `None` until the first good load.
+static LAST_GOOD_CONFIG: Mutex<Option<Config>> = Mutex::new(None);
+
 impl Config {
     /// Get the config file path
     pub fn path() -> Option<PathBuf> {
@@ -33,14 +40,69 @@ impl Config {
         Ok(config)
     }
 
-    /// Load config from file only (no env overrides)
+    /// Load config from file only (no env overrides).
+    ///
+    /// REL-02: on a parse/read error we must NOT silently fall through to
+    /// `Config::default()`, which would drop every user setting — including
+    /// security opt-outs like telemetry/discovery — the moment a single TOML
+    /// typo lands. Instead we (1) back up the corrupt file once so it is
+    /// recoverable and the user can repair it, and (2) return the last config
+    /// that loaded successfully in this process, so a bad edit does not reset
+    /// live settings. Interactive callers that need to surface the error use
+    /// [`Self::load_strict`] (see `config_edit_notice`).
     fn load_from_file() -> Option<Self> {
         match Self::load_from_file_strict() {
-            Ok(config) => config,
-            Err(e) => {
-                crate::logging::error(&format!("Failed to parse config file: {}", e));
-                None
+            Ok(config) => {
+                if let Some(ref cfg) = config {
+                    Self::remember_last_good(cfg);
+                }
+                config
             }
+            Err(e) => {
+                crate::logging::error(&format!(
+                    "Failed to parse config file (keeping last-good settings; not resetting to                      defaults): {}",
+                    e
+                ));
+                Self::back_up_corrupt_config(&e);
+                Self::last_good()
+            }
+        }
+    }
+
+    /// Snapshot the most recently parsed-good config for REL-02 fallback.
+    fn remember_last_good(cfg: &Self) {
+        if let Ok(mut guard) = LAST_GOOD_CONFIG.lock() {
+            *guard = Some(cfg.clone());
+        }
+    }
+
+    /// The last config that parsed successfully in this process, if any.
+    fn last_good() -> Option<Self> {
+        LAST_GOOD_CONFIG.lock().ok().and_then(|guard| guard.clone())
+    }
+
+    /// Copy a corrupt config file aside so the user can inspect/repair it and so
+    /// the bad content is never silently overwritten by the next `save()`.
+    ///
+    /// Idempotent per corrupt version: the backup is only (re)written when its
+    /// contents differ from the current corrupt file, so a repeated reload loop
+    /// does not churn the disk.
+    fn back_up_corrupt_config(error: &anyhow::Error) {
+        let Some(path) = Self::path() else { return };
+        let Ok(corrupt) = std::fs::read(&path) else {
+            return;
+        };
+        let backup = path.with_extension("toml.corrupt");
+        if std::fs::read(&backup).ok().as_deref() == Some(corrupt.as_slice()) {
+            return; // already backed up this exact corrupt content
+        }
+        if std::fs::write(&backup, &corrupt).is_ok() {
+            crate::storage::harden_secret_file_permissions(&backup);
+            crate::logging::warn(&format!(
+                "Backed up unparseable config to {} so it can be repaired ({}).",
+                backup.display(),
+                error
+            ));
         }
     }
 

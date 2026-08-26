@@ -102,3 +102,56 @@ fn concurrent_disjoint_writes_do_not_lose_updates() {
     }
     Config::invalidate_cache();
 }
+
+/// REL-02: a malformed config file must NOT silently reset live settings to
+/// defaults; the last good config is preserved and the bad file is backed up.
+#[test]
+fn malformed_config_preserves_last_good_and_backs_up() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    crate::env::set_var("JCODE_HOME", dir.path());
+    Config::invalidate_cache();
+
+    // Establish a known-good on-disk + last-good state with a non-default value.
+    Config::set_display_centered(true).expect("seed good config");
+    let good = Config::load();
+    assert!(
+        good.display.centered,
+        "precondition: good config has centered=true"
+    );
+
+    // Corrupt the file with invalid TOML.
+    let path = Config::path().expect("config path");
+    std::fs::write(
+        &path,
+        "this = is = not valid toml
+[[[",
+    )
+    .expect("write corrupt");
+
+    // Loading now must fall back to the last-good config, NOT Config::default().
+    let recovered = Config::load();
+    assert!(
+        recovered.display.centered,
+        "malformed config must preserve last-good settings, not reset to defaults"
+    );
+
+    // The corrupt file must be backed up for repair.
+    let backup = path.with_extension("toml.corrupt");
+    assert!(
+        backup.exists(),
+        "corrupt config should be backed up to {backup:?}"
+    );
+    let backed = std::fs::read_to_string(&backup).expect("read backup");
+    assert!(
+        backed.contains("not valid toml"),
+        "backup must hold the corrupt bytes"
+    );
+
+    match prev_home {
+        Some(prev) => crate::env::set_var("JCODE_HOME", prev),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+    Config::invalidate_cache();
+}
