@@ -378,6 +378,46 @@ pub fn adapt_buffer_for_palette(buf: &mut ratatui::buffer::Buffer) {
     }
 }
 
+/// Whether the user has requested no color output (VC-01 / accessibility).
+///
+/// Honors the cross-tool `NO_COLOR` convention (https://no-color.org) and
+/// jcode's own `JCODE_NO_COLOR`, matching what the CLI already respects. Read
+/// once and cached: env vars do not change mid-process, and this runs per
+/// frame on the render hot path.
+pub fn no_color_requested() -> bool {
+    use std::sync::OnceLock;
+    static NO_COLOR: OnceLock<bool> = OnceLock::new();
+    *NO_COLOR.get_or_init(|| {
+        std::env::var_os("NO_COLOR").is_some() || std::env::var_os("JCODE_NO_COLOR").is_some()
+    })
+}
+
+/// Strip all foreground/background/underline colors from a rendered buffer when
+/// `NO_COLOR`/`JCODE_NO_COLOR` is set (VC-01).
+///
+/// The TUI's design tokens are structural (glyphs, spinners, layout) as well as
+/// chromatic, so dropping color to the terminal default keeps the UI legible
+/// and monochrome for low-vision users and screen-scraping tools, mirroring the
+/// CLI's existing `NO_COLOR` handling. Text modifiers (bold/underline/reverse)
+/// are preserved so emphasis survives without color. This is the render-loop
+/// companion to [`adapt_buffer_for_palette`] and, unlike it, always applies.
+pub fn strip_colors_for_no_color(buf: &mut ratatui::buffer::Buffer) {
+    strip_colors_if(buf, no_color_requested());
+}
+
+/// Core of [`strip_colors_for_no_color`] with the decision injected, so tests
+/// can exercise both branches without mutating process-global env state.
+fn strip_colors_if(buf: &mut ratatui::buffer::Buffer, strip: bool) {
+    if !strip {
+        return;
+    }
+    for cell in buf.content.iter_mut() {
+        cell.fg = Color::Reset;
+        cell.bg = Color::Reset;
+        cell.underline_color = Color::Reset;
+    }
+}
+
 /// The RGB a role's default renders as in the *current* theme.
 ///
 /// Literals arriving at substitution have already been through the light-theme
@@ -644,6 +684,27 @@ mod buffer_tests {
             cell.fg = *color;
         }
         buf
+    }
+
+    #[test]
+    fn no_color_strips_all_colors_to_reset() {
+        // VC-01: with NO_COLOR active, every fg/bg/underline drops to Reset.
+        let mut buf = buffer_with(&[Color::Rgb(255, 0, 0), Color::Indexed(42)]);
+        buf.content[0].bg = Color::Rgb(0, 0, 255);
+        buf.content[0].underline_color = Color::Green;
+        strip_colors_if(&mut buf, true);
+        for cell in buf.content.iter() {
+            assert_eq!(cell.fg, Color::Reset);
+            assert_eq!(cell.bg, Color::Reset);
+            assert_eq!(cell.underline_color, Color::Reset);
+        }
+    }
+
+    #[test]
+    fn no_color_disabled_leaves_colors_untouched() {
+        let mut buf = buffer_with(&[Color::Rgb(255, 0, 0)]);
+        strip_colors_if(&mut buf, false);
+        assert_eq!(buf.content[0].fg, Color::Rgb(255, 0, 0));
     }
 
     // The default palette must render byte-identically to the historical

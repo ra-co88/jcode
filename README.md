@@ -306,6 +306,10 @@ Jcode is left-aligned by default. You can switch to centered mode with the `Alt+
 
 To disable emoji globally in TUI and CLI output, set `emoji = false` under `[display]` in `~/.jcode/config.toml`, or launch with `JCODE_NO_EMOJI=1`. Jcode replaces emoji with compact ASCII markers while preserving other Unicode text.
 
+### Accessibility
+
+jcode is keyboard-driven, honors `NO_COLOR`/`JCODE_NO_COLOR`, encodes status with glyphs (not color alone), and measures theme contrast. Because it is a terminal UI, it has no dedicated screen-reader announcement channel yet. See [`docs/ACCESSIBILITY.md`](docs/ACCESSIBILITY.md) for an honest account of what works today, current limitations, and recommendations for screen-reader users.
+
 ---
 
 ## Swarm
