@@ -97,13 +97,59 @@ pub fn wait_plan() -> NetworkWaitPlan {
     }
 }
 
-pub async fn wait_until_probably_online() {
+/// Default ceiling for a single reconnect wait. Long enough to ride out a VPN
+/// flap or a sleeping laptop, short enough that a permanently offline state
+/// (broken VPN profile, captive portal that never satisfies the probe) cannot
+/// wedge a caller forever (REL-01).
+pub const DEFAULT_RECONNECT_CEILING: Duration = Duration::from_secs(300);
+
+/// Outcome of a bounded reconnect wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReconnectOutcome {
+    /// Connectivity was observed; the caller should retry its request.
+    Online,
+    /// The ceiling elapsed while still offline; the caller must surface this
+    /// and stop rather than block forever.
+    GaveUp { waited: Duration },
+}
+
+impl ReconnectOutcome {
+    pub fn is_online(self) -> bool {
+        matches!(self, ReconnectOutcome::Online)
+    }
+}
+
+/// Wait until connectivity is probably restored, bounded by [`DEFAULT_RECONNECT_CEILING`].
+///
+/// REL-01: previously this looped forever with exponential backoff and no
+/// ceiling, so a permanent offline state wedged the caller with no escape. It
+/// now returns [`ReconnectOutcome::GaveUp`] once the ceiling elapses so callers
+/// can fail with a visible diagnostic instead of hanging.
+pub async fn wait_until_probably_online() -> ReconnectOutcome {
+    wait_until_probably_online_bounded(DEFAULT_RECONNECT_CEILING).await
+}
+
+/// Bounded reconnect wait with an explicit total-time ceiling.
+///
+/// Polls with exponential backoff (capped at 30s per interval) until either
+/// connectivity is observed ([`ReconnectOutcome::Online`]) or `max_total`
+/// elapses ([`ReconnectOutcome::GaveUp`]). A zero or negative budget still makes
+/// at least one connectivity probe so a transient blip is caught cheaply.
+pub async fn wait_until_probably_online_bounded(max_total: Duration) -> ReconnectOutcome {
+    let start = std::time::Instant::now();
     let mut delay = Duration::from_secs(1);
     loop {
         if probe_connectivity().await {
-            return;
+            return ReconnectOutcome::Online;
         }
-        wait_for_platform_change_or_delay(delay).await;
+        let elapsed = start.elapsed();
+        if elapsed >= max_total {
+            return ReconnectOutcome::GaveUp { waited: elapsed };
+        }
+        // Never sleep past the remaining budget, so we return close to the
+        // ceiling rather than overshooting by a full backoff interval.
+        let remaining = max_total - elapsed;
+        wait_for_platform_change_or_delay(delay.min(remaining)).await;
         delay = (delay * 2).min(Duration::from_secs(30));
     }
 }
@@ -182,6 +228,36 @@ async fn wait_for_command_output(command: &str, args: &[&str]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REL-01: a bounded wait must return within roughly its ceiling and never
+    /// hang, whatever the network state. With a tiny budget it resolves fast;
+    /// if offline it reports `GaveUp` rather than looping forever.
+    #[tokio::test]
+    async fn bounded_wait_respects_its_ceiling() {
+        let ceiling = Duration::from_millis(200);
+        let start = std::time::Instant::now();
+        let outcome = wait_until_probably_online_bounded(ceiling).await;
+        let elapsed = start.elapsed();
+
+        // Must not overshoot the ceiling by more than one probe timeout (5s)
+        // plus scheduling slack — the key property is that it terminates.
+        assert!(
+            elapsed < ceiling + Duration::from_secs(8),
+            "bounded wait ran {elapsed:?}, far past its {ceiling:?} ceiling"
+        );
+        // Whatever the CI network state, the outcome must be one of the two
+        // terminal states (i.e. the function returned at all).
+        match outcome {
+            ReconnectOutcome::Online => assert!(outcome.is_online()),
+            ReconnectOutcome::GaveUp { waited } => {
+                assert!(!outcome.is_online());
+                assert!(
+                    waited >= ceiling,
+                    "GaveUp waited {waited:?} < ceiling {ceiling:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn classifies_common_network_errors() {
