@@ -35,6 +35,8 @@ mod session_search;
 pub(crate) mod session_search_index;
 mod side_panel;
 mod skill;
+/// SEC-03: shared SSRF destination guard for webfetch/websearch.
+mod ssrf;
 mod todo;
 mod webfetch;
 mod websearch;
