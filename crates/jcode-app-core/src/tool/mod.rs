@@ -11,6 +11,8 @@ mod computer;
 mod config_edit_notice;
 mod conversation_search;
 mod debug_socket;
+/// Shared #604 destructive-command gate (used by `bash` and `computer` scripting).
+mod destructive_gate;
 mod discover;
 mod discover_secrets;
 mod edit;
@@ -33,6 +35,8 @@ mod session_search;
 pub(crate) mod session_search_index;
 mod side_panel;
 mod skill;
+/// SEC-03: shared SSRF destination guard for webfetch/websearch.
+mod ssrf;
 mod todo;
 mod webfetch;
 mod websearch;

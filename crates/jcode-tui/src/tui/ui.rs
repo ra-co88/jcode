@@ -2667,6 +2667,10 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
     // color call sites. See `palette::adapt_buffer_for_palette` for the ordering.
     jcode_tui_style::adapt_buffer_for_theme(frame.buffer_mut());
     jcode_tui_style::palette::adapt_buffer_for_palette(frame.buffer_mut());
+    // VC-01: honor NO_COLOR/JCODE_NO_COLOR in the TUI, mirroring the CLI. Runs
+    // last on colors so it overrides theme/palette output with the terminal
+    // default; text modifiers (bold/underline) are preserved.
+    jcode_tui_style::palette::strip_colors_for_no_color(frame.buffer_mut());
     adapt_buffer_for_emoji_preference(frame.buffer_mut());
     // Cache eviction/clearing can outlive the last visible image. Carry Kitty
     // deletion commands on any completed frame so terminal-side pixel storage

@@ -3,6 +3,8 @@ pub(crate) enum PendingLogin {
     /// Waiting for user to paste Claude OAuth code for a specific stored account
     ClaudeAccount {
         verifier: String,
+        /// Independent CSRF state (SEC-01); never the PKCE verifier.
+        expected_state: String,
         label: String,
         redirect_uri: Option<String>,
     },

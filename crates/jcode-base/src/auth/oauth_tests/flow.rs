@@ -236,15 +236,9 @@ fn openai_refresh_request_targets_correct_url() -> Result<()> {
 #[test]
 fn claude_auth_url_contains_required_params() -> Result<()> {
     let (verifier, challenge) = generate_pkce();
-    let auth_url = format!(
-        "{}?code=true&client_id={}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
-        claude::AUTHORIZE_URL,
-        claude::CLIENT_ID,
-        urlencoding::encode(claude::REDIRECT_URI),
-        urlencoding::encode(claude::SCOPES),
-        challenge,
-        verifier,
-    );
+    let state = generate_state();
+    // Use the production builder so the test tracks real behaviour.
+    let auth_url = claude_auth_url(claude::REDIRECT_URI, &challenge, &state);
     let parsed = url::Url::parse(&auth_url).map_err(|e| anyhow!(e))?;
     let params: HashMap<String, String> = parsed
         .query_pairs()
@@ -260,7 +254,18 @@ fn claude_auth_url_contains_required_params() -> Result<()> {
     assert_eq!(require_param(&params, "scope")?, claude::SCOPES);
     assert_eq!(require_param(&params, "code_challenge")?, challenge);
     assert_eq!(require_param(&params, "code_challenge_method")?, "S256");
-    assert_eq!(require_param(&params, "state")?, verifier);
+    assert_eq!(require_param(&params, "state")?, state);
+    // SEC-01 regression: the PKCE verifier must never be used as the CSRF state,
+    // so it must never appear verbatim in the authorization URL.
+    assert_ne!(
+        require_param(&params, "state")?,
+        verifier,
+        "PKCE code_verifier leaked into the authorization URL as state"
+    );
+    assert!(
+        !auth_url.contains(&verifier),
+        "PKCE code_verifier must not appear anywhere in the authorization URL"
+    );
     assert_eq!(parsed.host_str(), Some("claude.com"));
     assert_eq!(parsed.path(), "/cai/oauth/authorize");
     Ok(())
@@ -513,6 +518,7 @@ async fn claude_exchange_uses_state_from_url_query_when_present() -> Result<()> 
     let url = format!("http://127.0.0.1:{}/v1/oauth/token", port);
     let _ = exchange_claude_code_at_url(
         &url,
+        "verifier",
         "query_state",
         "https://example.com/callback?code=test_code&state=query_state",
         "https://r",
@@ -537,7 +543,8 @@ async fn claude_exchange_uses_claude_code_token_headers() -> Result<()> {
     let (port, handle) = mock_token_server(200, &success_body).await;
 
     let url = format!("http://127.0.0.1:{}/v1/oauth/token", port);
-    let _ = exchange_claude_code_at_url(&url, "verifier", "plain_code", "https://r").await?;
+    let _ =
+        exchange_claude_code_at_url(&url, "verifier", "state", "plain_code", "https://r").await?;
 
     let (_method, _path, headers, _body) = handle.await.map_err(|e| anyhow!(e))?;
     assert_eq!(
@@ -571,7 +578,7 @@ async fn claude_exchange_rejects_token_without_inference_scope() -> Result<()> {
     let (port, _handle) = mock_token_server(200, &success_body).await;
 
     let url = format!("http://127.0.0.1:{}/v1/oauth/token", port);
-    let err = exchange_claude_code_at_url(&url, "verifier", "plain_code", "https://r")
+    let err = exchange_claude_code_at_url(&url, "verifier", "state", "plain_code", "https://r")
         .await
         .expect_err("token without user:inference should be rejected")
         .to_string();
@@ -593,7 +600,8 @@ async fn claude_exchange_preserves_returned_scopes() -> Result<()> {
     let (port, _handle) = mock_token_server(200, &success_body).await;
 
     let url = format!("http://127.0.0.1:{}/v1/oauth/token", port);
-    let tokens = exchange_claude_code_at_url(&url, "verifier", "plain_code", "https://r").await?;
+    let tokens =
+        exchange_claude_code_at_url(&url, "verifier", "state", "plain_code", "https://r").await?;
 
     assert!(tokens.scopes.iter().any(|scope| scope == "user:inference"));
     Ok(())
@@ -605,7 +613,7 @@ async fn claude_exchange_cloudflare_403_is_actionable() -> Result<()> {
     let (port, _handle) = mock_token_server(403, challenge).await;
 
     let url = format!("http://127.0.0.1:{}/v1/oauth/token", port);
-    let err = exchange_claude_code_at_url(&url, "verifier", "plain_code", "https://r")
+    let err = exchange_claude_code_at_url(&url, "verifier", "state", "plain_code", "https://r")
         .await
         .expect_err("Cloudflare challenge should fail with guidance")
         .to_string();
@@ -620,6 +628,7 @@ async fn claude_exchange_cloudflare_403_is_actionable() -> Result<()> {
 async fn claude_exchange_rejects_state_mismatch() -> Result<()> {
     let result = exchange_claude_code_at_url(
         "http://127.0.0.1:1/v1/oauth/token",
+        "verifier",
         "expected_state",
         "https://example.com/callback?code=test_code&state=wrong_state",
         "https://r",
@@ -674,7 +683,7 @@ async fn openai_callback_input_rejects_state_mismatch() -> Result<()> {
 }
 
 #[tokio::test]
-async fn claude_exchange_falls_back_to_verifier_when_input_has_no_state() -> Result<()> {
+async fn claude_exchange_falls_back_to_expected_state_when_input_has_no_state() -> Result<()> {
     let success_body = serde_json::json!({
         "access_token": "at",
         "refresh_token": "rt",
@@ -684,17 +693,26 @@ async fn claude_exchange_falls_back_to_verifier_when_input_has_no_state() -> Res
     let (port, handle) = mock_token_server(200, &success_body).await;
 
     let url = format!("http://127.0.0.1:{}/v1/oauth/token", port);
-    let _ = exchange_claude_code_at_url(&url, "verifier_only", "plain_code", "https://r").await?;
+    let _ = exchange_claude_code_at_url(
+        &url,
+        "verifier",
+        "generated_state",
+        "plain_code",
+        "https://r",
+    )
+    .await?;
 
     let (_method, _path, _headers, body) = handle.await.map_err(|e| anyhow!(e))?;
     let body: serde_json::Value = serde_json::from_str(&body)?;
-    assert_eq!(require_json_str(&body, "state")?, "verifier_only");
+    // With no state in the callback input, the exchange uses the state we
+    // generated for the auth URL (SEC-01) — never the PKCE verifier.
+    assert_eq!(require_json_str(&body, "state")?, "generated_state");
     assert_eq!(require_json_str(&body, "code")?, "plain_code");
     Ok(())
 }
 
 #[tokio::test]
-async fn claude_exchange_uses_verifier_when_input_state_is_empty() -> Result<()> {
+async fn claude_exchange_uses_expected_state_when_input_state_is_empty() -> Result<()> {
     let success_body = serde_json::json!({
         "access_token": "at",
         "refresh_token": "rt",
@@ -704,11 +722,18 @@ async fn claude_exchange_uses_verifier_when_input_state_is_empty() -> Result<()>
     let (port, handle) = mock_token_server(200, &success_body).await;
 
     let url = format!("http://127.0.0.1:{}/v1/oauth/token", port);
-    let _ = exchange_claude_code_at_url(&url, "verifier_only", "plain_code#", "https://r").await?;
+    let _ = exchange_claude_code_at_url(
+        &url,
+        "verifier",
+        "generated_state",
+        "plain_code#",
+        "https://r",
+    )
+    .await?;
 
     let (_method, _path, _headers, body) = handle.await.map_err(|e| anyhow!(e))?;
     let body: serde_json::Value = serde_json::from_str(&body)?;
-    assert_eq!(require_json_str(&body, "state")?, "verifier_only");
+    assert_eq!(require_json_str(&body, "state")?, "generated_state");
     Ok(())
 }
 

@@ -213,11 +213,19 @@ impl App {
                                     };
                                     status_spinner_renderer.draw_full(self, terminal)?;
                                     super::run_shell::reset_status_spinner_interval(&mut status_spinner_interval, self);
-                                    crate::network_retry::wait_until_probably_online().await;
+                                    if crate::network_retry::wait_until_probably_online()
+                                        .await
+                                        .is_online()
+                                    {
+                                        self.push_display_message(DisplayMessage::system(
+                                            "Network connectivity looks restored; retrying request.".to_string(),
+                                        ));
+                                        continue 'turn_loop;
+                                    }
                                     self.push_display_message(DisplayMessage::system(
-                                        "Network connectivity looks restored; retrying request.".to_string(),
+                                        "Still offline after waiting several minutes; giving up on this request. Check your connection and try again.".to_string(),
                                     ));
-                                    continue 'turn_loop;
+                                    return Err(err);
                                 }
                                 return Err(err);
                             }
@@ -750,11 +758,19 @@ impl App {
                                                 listener: plan.listener_summary.clone(),
                                             };
                                             status_spinner_renderer.draw_full(self, terminal)?;
-                                            crate::network_retry::wait_until_probably_online().await;
+                                            if crate::network_retry::wait_until_probably_online()
+                                                .await
+                                                .is_online()
+                                            {
+                                                self.push_display_message(DisplayMessage::system(
+                                                    "Network connectivity looks restored; retrying request.".to_string(),
+                                                ));
+                                                continue 'turn_loop;
+                                            }
                                             self.push_display_message(DisplayMessage::system(
-                                                "Network connectivity looks restored; retrying request.".to_string(),
+                                                "Still offline after waiting several minutes; giving up on this request. Check your connection and try again.".to_string(),
                                             ));
-                                            continue 'turn_loop;
+                                            return Err(anyhow::anyhow!("Stream error: {}", message));
                                         }
                                         return Err(anyhow::anyhow!("Stream error: {}", message));
                                     }
@@ -1019,11 +1035,19 @@ impl App {
                                         listener: plan.listener_summary.clone(),
                                     };
                                     status_spinner_renderer.draw_full(self, terminal)?;
-                                    crate::network_retry::wait_until_probably_online().await;
+                                    if crate::network_retry::wait_until_probably_online()
+                                        .await
+                                        .is_online()
+                                    {
+                                        self.push_display_message(DisplayMessage::system(
+                                            "Network connectivity looks restored; retrying request.".to_string(),
+                                        ));
+                                        continue 'turn_loop;
+                                    }
                                     self.push_display_message(DisplayMessage::system(
-                                        "Network connectivity looks restored; retrying request.".to_string(),
+                                        "Still offline after waiting several minutes; giving up on this request. Check your connection and try again.".to_string(),
                                     ));
-                                    continue 'turn_loop;
+                                    return Err(e);
                                 }
                                 return Err(e);
                             }
@@ -1043,11 +1067,19 @@ impl App {
                                         listener: plan.listener_summary.clone(),
                                     };
                                     status_spinner_renderer.draw_full(self, terminal)?;
-                                    crate::network_retry::wait_until_probably_online().await;
+                                    if crate::network_retry::wait_until_probably_online()
+                                        .await
+                                        .is_online()
+                                    {
+                                        self.push_display_message(DisplayMessage::system(
+                                            "Network connectivity looks restored; retrying request.".to_string(),
+                                        ));
+                                        continue 'turn_loop;
+                                    }
                                     self.push_display_message(DisplayMessage::system(
-                                        "Network connectivity looks restored; retrying request.".to_string(),
+                                        "Still offline after waiting several minutes; ending this turn. Check your connection and try again.".to_string(),
                                     ));
-                                    continue 'turn_loop;
+                                    break;
                                 }
                                 break;
                             }

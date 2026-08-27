@@ -21,11 +21,44 @@ pub struct WebFetchTool {
     client: reqwest::Client,
 }
 
+/// Max redirects webfetch will follow manually. Each hop is re-validated by the
+/// SSRF guard, so a public URL cannot bounce the fetch to an internal one.
+const MAX_REDIRECTS: usize = 5;
+
 impl WebFetchTool {
     pub fn new() -> Self {
-        Self {
-            client: crate::provider::shared_http_client(),
-        }
+        // SEC-03: webfetch does NOT auto-follow redirects. reqwest's default
+        // policy would silently chase a 30x into loopback/metadata after our
+        // pre-flight guard already passed. We follow manually and re-guard every
+        // hop (see `execute`). Falls back to the shared client if the dedicated
+        // build fails, so webfetch never becomes unavailable.
+        let client = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (compatible; JCode/1.0)")
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_else(|_| crate::provider::shared_http_client());
+        Self { client }
+    }
+
+    /// Build a no-redirect client that pins the guarded host to the exact IP the
+    /// SSRF guard validated (SEC-03 DNS-rebinding hardening). Returns `None`
+    /// when there is nothing to pin (literal-IP URL), so the caller uses the
+    /// default client. `resolve()` overrides DNS for this host only, so reqwest
+    /// connects to the checked address instead of re-resolving.
+    fn pinned_client(&self, target: &super::ssrf::GuardedTarget) -> Result<reqwest::Client> {
+        let host = target
+            .host
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("DNS guard returned no host to pin"))?;
+        let addr = target
+            .pinned
+            .ok_or_else(|| anyhow::anyhow!("DNS guard returned no address to pin"))?;
+        reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (compatible; JCode/1.0)")
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve(host, addr)
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build pinned SSRF-safe HTTP client: {e}"))
     }
 }
 
@@ -78,25 +111,67 @@ impl Tool for WebFetchTool {
         if !params.url.starts_with("http://") && !params.url.starts_with("https://") {
             return Err(anyhow::anyhow!("URL must start with http:// or https://"));
         }
-
         let timeout = params.timeout.unwrap_or(DEFAULT_TIMEOUT).min(MAX_TIMEOUT);
         let format = params.format.as_deref().unwrap_or("markdown");
 
-        let response = self
-            .client
-            .get(&params.url)
-            .header(
-                reqwest::header::USER_AGENT,
-                "Mozilla/5.0 (compatible; JCode/1.0)",
-            )
-            .timeout(Duration::from_secs(timeout))
-            .send()
-            .await?;
+        // SEC-03: follow redirects manually, re-validating EVERY hop against the
+        // SSRF guard so a public URL cannot 30x-redirect into loopback/private/
+        // metadata space (the pre-flight check alone would miss that). For each
+        // hop we PIN the connection to the exact validated IP (reqwest
+        // `resolve()`), so the address we checked is the address connected to —
+        // closing the resolve-then-connect DNS-rebinding TOCTOU gap.
+        let mut current_url = params.url.clone();
+        let mut redirects = 0usize;
+        let response = loop {
+            let target = super::ssrf::guard_public_url_pinned(&current_url).await?;
+            let client = if target.host.is_some() {
+                // A DNS-resolved target must use the exact address that passed
+                // the SSRF check. Never fall back to an unpinned client: that
+                // would reintroduce the resolve/connect TOCTOU gap on a client
+                // construction failure.
+                self.pinned_client(&target)?
+            } else {
+                self.client.clone()
+            };
+            let resp = client
+                .get(&current_url)
+                .header(
+                    reqwest::header::USER_AGENT,
+                    "Mozilla/5.0 (compatible; JCode/1.0)",
+                )
+                .timeout(Duration::from_secs(timeout))
+                .send()
+                .await?;
 
-        let status = response.status();
-        if !status.is_success() {
-            return Err(anyhow::anyhow!("HTTP error: {}", status));
-        }
+            let status = resp.status();
+            if status.is_redirection() {
+                let location = resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("HTTP {} redirect without a Location header", status)
+                    })?;
+                // Resolve relative redirects against the current URL.
+                let next = reqwest::Url::parse(&current_url)
+                    .and_then(|base| base.join(location))
+                    .map_err(|e| anyhow::anyhow!("Invalid redirect target `{location}`: {e}"))?;
+                redirects += 1;
+                if redirects > MAX_REDIRECTS {
+                    return Err(anyhow::anyhow!(
+                        "Too many redirects (>{MAX_REDIRECTS}) starting from {}",
+                        params.url
+                    ));
+                }
+                current_url = next.to_string();
+                continue;
+            }
+
+            if !status.is_success() {
+                return Err(anyhow::anyhow!("HTTP error: {}", status));
+            }
+            break resp;
+        };
 
         // Check content length
         if let Some(len) = response.content_length()

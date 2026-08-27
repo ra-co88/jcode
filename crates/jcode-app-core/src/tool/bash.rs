@@ -835,9 +835,8 @@ fn default_true() -> bool {
     true
 }
 
-#[path = "bash_destructive_gate.rs"]
-mod destructive_gate;
-use destructive_gate::destructive_command_refusal;
+use super::destructive_gate;
+use super::destructive_gate::destructive_command_refusal;
 #[async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &str {

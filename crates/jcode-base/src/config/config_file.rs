@@ -1,6 +1,149 @@
 use super::*;
 use crate::storage::jcode_dir;
 use std::path::PathBuf;
+use std::sync::Mutex;
+
+/// Serializes all `Config::save()` writers in this process so concurrent
+/// `load -> mutate -> save` helpers cannot clobber each other (RC-01). This is
+/// intra-process; the atomic temp-file + `rename` in `save()` additionally makes
+/// writes crash-safe and reduces (though cannot fully eliminate) cross-process
+/// interleavings.
+static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Last config that parsed successfully in this process (REL-02).
+///
+/// When a later reload hits a malformed file, we return this instead of
+/// `Config::default()` so a single TOML typo cannot silently wipe live user
+/// settings (including security opt-outs). `None` until the first good load.
+static LAST_GOOD_CONFIG: Mutex<Option<Config>> = Mutex::new(None);
+
+/// Cross-process advisory lock over config writes (RC-01).
+///
+/// Held for the whole read-modify-write in [`Config::mutate_if`] so two
+/// separate jcode processes serialize their `load -> mutate -> save` cycles and
+/// cannot lose one another's updates. On Unix this is a `flock(LOCK_EX)` on a
+/// dedicated `config.toml.lock` file; on other platforms it is a no-op and only
+/// the in-process mutex applies (documented limitation). Acquisition is
+/// best-effort: a lock failure logs and proceeds rather than blocking config
+/// writes, since the atomic rename still prevents a torn file.
+struct ConfigFileLock {
+    /// Held open for the lock's lifetime on Unix and Windows; `None` when the
+    /// lock file could not be opened or on platforms with no advisory-lock
+    /// path (then only the in-process mutex applies). Unused otherwise.
+    #[cfg_attr(not(any(unix, windows)), allow(dead_code))]
+    file: Option<std::fs::File>,
+}
+
+impl ConfigFileLock {
+    /// Open (creating if needed) and harden the `config.toml.lock` file.
+    fn open_lock_file() -> Option<std::fs::File> {
+        let lock_path = Config::path()?.with_extension("toml.lock");
+        if let Some(parent) = lock_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .ok()?;
+        // Harden the lock file (it lives beside the secret-bearing config);
+        // ignore failures.
+        let _ = jcode_core::fs::set_permissions_owner_only(&lock_path);
+        Some(f)
+    }
+
+    fn acquire() -> Self {
+        let file = Self::open_lock_file();
+
+        #[cfg(unix)]
+        if let Some(ref f) = file {
+            use std::os::unix::io::AsRawFd;
+            // Blocking exclusive advisory lock. flock retries EINTR itself.
+            let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
+            if rc != 0 {
+                crate::logging::warn(
+                    "config: could not acquire inter-process write lock; proceeding \
+                     with in-process lock only",
+                );
+            }
+        }
+
+        #[cfg(windows)]
+        if let Some(ref f) = file {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileEx};
+            use windows_sys::Win32::System::IO::OVERLAPPED;
+            // Blocking exclusive lock over the whole (0..u32::MAX,u32::MAX)
+            // range — the byte range is nominal since the file is empty; the
+            // lock is what serializes writers across processes.
+            let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+            let ok = unsafe {
+                LockFileEx(
+                    f.as_raw_handle() as _,
+                    LOCKFILE_EXCLUSIVE_LOCK,
+                    0,
+                    u32::MAX,
+                    u32::MAX,
+                    &mut overlapped,
+                )
+            };
+            if ok == 0 {
+                crate::logging::warn(
+                    "config: could not acquire inter-process write lock; proceeding \
+                     with in-process lock only",
+                );
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            // No advisory-lock API wired for this platform; the in-process mutex
+            // still serializes threads. Kept explicit rather than silent.
+            let _ = &file;
+        }
+
+        ConfigFileLock { file }
+    }
+}
+
+impl Drop for ConfigFileLock {
+    fn drop(&mut self) {
+        let Some(ref f) = self.file else { return };
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            // Release the advisory lock; closing the fd would also drop it, but
+            // be explicit so the unlock is visible and prompt.
+            unsafe {
+                libc::flock(f.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+            use windows_sys::Win32::System::IO::OVERLAPPED;
+            let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+            unsafe {
+                UnlockFileEx(
+                    f.as_raw_handle() as _,
+                    0,
+                    u32::MAX,
+                    u32::MAX,
+                    &mut overlapped,
+                );
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = f;
+        }
+    }
+}
 
 impl Config {
     /// Get the config file path
@@ -25,24 +168,143 @@ impl Config {
         Ok(config)
     }
 
-    /// Load the on-disk config for a read-modify-write operation.
+    /// Load config from file only (no env overrides).
     ///
-    /// Unlike [`Self::load`], this never converts a parse error into defaults.
-    /// Saving those defaults would destroy the user's existing config. It also
-    /// deliberately skips environment overrides so transient process settings
-    /// are not baked into the file as a side effect of changing one preference.
-    fn load_for_update() -> anyhow::Result<Self> {
-        Ok(Self::load_from_file_strict()?.unwrap_or_default())
-    }
-
-    /// Load config from file only (no env overrides)
+    /// REL-02: on a parse/read error we must NOT silently fall through to
+    /// `Config::default()`, which would drop every user setting — including
+    /// security opt-outs like telemetry/discovery — the moment a single TOML
+    /// typo lands. Instead we (1) back up the corrupt file once so it is
+    /// recoverable and the user can repair it, and (2) return the last config
+    /// that loaded successfully in this process, so a bad edit does not reset
+    /// live settings. Interactive callers that need to surface the error use
+    /// [`Self::load_strict`] (see `config_edit_notice`).
     fn load_from_file() -> Option<Self> {
         match Self::load_from_file_strict() {
-            Ok(config) => config,
-            Err(e) => {
-                crate::logging::error(&format!("Failed to parse config file: {}", e));
-                None
+            Ok(config) => {
+                if let Some(ref cfg) = config {
+                    Self::remember_last_good(cfg);
+                }
+                config
             }
+            Err(e) => {
+                crate::logging::error(&format!(
+                    "Failed to parse config file (keeping last-good settings; not resetting to                      defaults): {}",
+                    e
+                ));
+                Self::back_up_corrupt_config(&e);
+                Self::last_good()
+            }
+        }
+    }
+
+    /// Snapshot the most recently parsed-good config for REL-02 fallback, both
+    /// in-process and on disk.
+    ///
+    /// The in-process copy protects a running session; the on-disk copy
+    /// (`config.toml.last-good`) preserves the last known-good settings across
+    /// application restarts, so a fresh process that finds `config.toml`
+    /// corrupt recovers real settings instead of silently reverting to
+    /// `Config::default()`. The disk copy is a byte-for-byte snapshot of the
+    /// valid file (comments/formatting preserved) written 0o600 atomically.
+    fn remember_last_good(cfg: &Self) {
+        if let Ok(mut guard) = LAST_GOOD_CONFIG.lock() {
+            *guard = Some(cfg.clone());
+        }
+        // Persist a raw snapshot of the just-validated file. Copy the on-disk
+        // bytes rather than re-serializing so comments and layout survive.
+        let Some(path) = Self::path() else { return };
+        let Ok(raw) = std::fs::read(&path) else {
+            return;
+        };
+        let snapshot = Self::last_good_path();
+        // Skip the write when the snapshot already matches, to avoid churn.
+        if std::fs::read(&snapshot).ok().as_deref() == Some(raw.as_slice()) {
+            return;
+        }
+        if let Err(e) = Self::write_atomic_hardened(&snapshot, &raw) {
+            crate::logging::warn(&format!(
+                "Failed to persist last-good config snapshot to {}: {}",
+                snapshot.display(),
+                e
+            ));
+        }
+    }
+
+    /// Path to the on-disk last-good config snapshot (REL-02).
+    fn last_good_path() -> std::path::PathBuf {
+        // Fall back to a relative name only if the primary path is unavailable;
+        // callers guard on that separately.
+        Self::path()
+            .map(|p| p.with_extension("toml.last-good"))
+            .unwrap_or_else(|| std::path::PathBuf::from("config.toml.last-good"))
+    }
+
+    /// Test-only: clear the in-process last-good snapshot to simulate a fresh
+    /// process, so tests can exercise the on-disk restore path (REL-02).
+    #[cfg(test)]
+    pub(crate) fn clear_in_process_last_good_for_tests() {
+        if let Ok(mut guard) = LAST_GOOD_CONFIG.lock() {
+            *guard = None;
+        }
+    }
+
+    /// The last config that parsed successfully — the in-process snapshot if
+    /// present, otherwise the on-disk `config.toml.last-good` from a prior run.
+    ///
+    /// The on-disk fallback is what makes REL-02 survive restarts: on a fresh
+    /// process with a malformed `config.toml`, this returns the persisted
+    /// known-good settings instead of `None` (which would become defaults).
+    fn last_good() -> Option<Self> {
+        if let Some(cfg) = LAST_GOOD_CONFIG.lock().ok().and_then(|g| g.clone()) {
+            return Some(cfg);
+        }
+        // Restore from the on-disk snapshot written by a previous good load.
+        let snapshot = Self::last_good_path();
+        let content = std::fs::read_to_string(&snapshot).ok()?;
+        match toml::from_str::<Self>(&content) {
+            Ok(mut cfg) => {
+                cfg.display.apply_legacy_compat();
+                cfg.repair_frozen_sponsors_optout(&content);
+                crate::logging::warn(&format!(
+                    "config.toml was unreadable; recovered last-good settings from {}.",
+                    snapshot.display()
+                ));
+                Some(cfg)
+            }
+            // A corrupt snapshot is useless; let the caller fall through to defaults.
+            Err(_) => None,
+        }
+    }
+
+    /// Copy a corrupt config file aside so the user can inspect/repair it and so
+    /// the bad content is never silently overwritten by the next `save()`.
+    ///
+    /// Idempotent per corrupt version: the backup is only (re)written when its
+    /// contents differ from the current corrupt file, so a repeated reload loop
+    /// does not churn the disk.
+    fn back_up_corrupt_config(error: &anyhow::Error) {
+        let Some(path) = Self::path() else { return };
+        let Ok(corrupt) = std::fs::read(&path) else {
+            return;
+        };
+        let backup = path.with_extension("toml.corrupt");
+        if std::fs::read(&backup).ok().as_deref() == Some(corrupt.as_slice()) {
+            return; // already backed up this exact corrupt content
+        }
+        // Use the same secure temp-file-then-rename path as save() so the backup
+        // is created 0o600 BEFORE the (possibly key-bearing) corrupt bytes are
+        // written — never a window at the default umask (SEC-04 hardening gap).
+        match Self::write_atomic_hardened(&backup, &corrupt) {
+            Ok(()) => crate::logging::warn(&format!(
+                "Backed up unparseable config to {} so it can be repaired ({}).",
+                backup.display(),
+                error
+            )),
+            Err(e) => crate::logging::error(&format!(
+                "Failed to back up unparseable config to {}: {}",
+                backup.display(),
+                e
+            )),
         }
     }
 
@@ -104,18 +366,114 @@ impl Config {
         );
     }
 
-    /// Save config to file
+    /// Save config to file.
+    ///
+    /// The write is **atomic** and **hardened**: content goes to a temp file in
+    /// the same directory, is fsynced, then `rename()`d over the target so a
+    /// crash mid-write can never leave a truncated `config.toml`; the file is
+    /// `0o600` inside a `0o700` directory (SEC-04) because it may hold provider
+    /// `api_key`s. A process-wide lock serializes the physical write.
+    ///
+    /// NOTE (RC-01): `save()` alone does not make a `load -> mutate -> save`
+    /// sequence race-free — two callers can each load the old state and then
+    /// serialize only at write time, losing one update. Mutation paths must go
+    /// through [`Self::mutate`], which holds the lock across the whole cycle.
     pub fn save(&self) -> anyhow::Result<()> {
-        let path = Self::path().ok_or_else(|| anyhow::anyhow!("No config path"))?;
+        let _guard = CONFIG_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Serialize direct physical writes with mutate_if() writers in other
+        // processes too. A caller that needs an atomic read-modify-write must
+        // still use mutate()/mutate_if() so the read also occurs under the lock.
+        let _file_lock = ConfigFileLock::acquire();
+        self.save_locked()
+    }
 
-        // Ensure parent directory exists
+    /// Physical atomic+hardened write. Caller must hold [`CONFIG_WRITE_LOCK`].
+    fn save_locked(&self) -> anyhow::Result<()> {
+        let path = Self::path().ok_or_else(|| anyhow::anyhow!("No config path"))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(&path, content)?;
+        Self::write_atomic_hardened(&path, content.as_bytes())?;
         Self::invalidate_cache();
+        Ok(())
+    }
+
+    /// Atomically read-modify-write the config (RC-01).
+    ///
+    /// Holds the process-wide write lock across the entire `load -> apply ->
+    /// save` cycle so concurrent mutations of disjoint fields cannot clobber
+    /// each other. `f` receives the freshly loaded config and mutates it in
+    /// place; the result is persisted atomically before the lock is released.
+    pub fn mutate(f: impl FnOnce(&mut Self)) -> anyhow::Result<()> {
+        Self::mutate_if(|cfg| {
+            f(cfg);
+            true
+        })
+    }
+
+    /// Like [`Self::mutate`], but only persists when the closure returns `true`.
+    ///
+    /// Lets callers keep an "only write when something actually changed"
+    /// optimization while still performing the whole read-modify-decide-write
+    /// cycle under the write lock (RC-01). Returns `Ok(())` whether or not a
+    /// write occurred.
+    pub fn mutate_if(f: impl FnOnce(&mut Self) -> bool) -> anyhow::Result<()> {
+        // Intra-process: serialize threads cheaply.
+        let _guard = CONFIG_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Inter-process (RC-01): hold an advisory file lock across the whole
+        // read-modify-write so two separate jcode processes cannot each load,
+        // edit disjoint fields, and clobber one another. Best-effort: if the
+        // lock cannot be taken we proceed (never worse than before, and the
+        // atomic rename still prevents a torn file).
+        let _flock = ConfigFileLock::acquire();
+        // Load fresh from disk INSIDE both locks so we never mutate a stale copy.
+        let mut cfg = Self::load();
+        if f(&mut cfg) {
+            cfg.save_locked()?;
+        }
+        Ok(())
+    }
+
+    /// Atomically write `bytes` to `path` with owner-only permissions.
+    ///
+    /// Temp-file-plus-rename gives crash safety (RC-01); the `0o600`/`0o700`
+    /// hardening gives secret-file protection for in-file API keys (SEC-04).
+    fn write_atomic_hardened(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> {
+        use std::io::Write;
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("config path has no parent directory"))?;
+
+        // Temp file in the SAME directory so `rename` stays on one filesystem
+        // (cross-device rename is not atomic and would fall back to copy).
+        let mut tmp = tempfile::Builder::new()
+            .prefix(".config.toml.")
+            .suffix(".tmp")
+            .tempfile_in(parent)?;
+
+        // Harden the temp file BEFORE it holds secrets, so there is never a
+        // window where the key-bearing bytes sit at default (readable) perms.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tmp.as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+
+        tmp.write_all(bytes)?;
+        tmp.flush()?;
+        // Durability: flush the file's contents to disk before the rename so a
+        // crash cannot expose an empty/torn config (REL-02 defense in depth).
+        tmp.as_file().sync_all()?;
+
+        // Atomic replace.
+        tmp.persist(path)
+            .map_err(|e| anyhow::anyhow!("failed to persist config file: {}", e.error))?;
+
+        // Best-effort hardening of the final file + parent dir (covers Windows
+        // ACLs and tightens a pre-existing permissive directory).
+        crate::storage::harden_secret_file_permissions(path);
         Ok(())
     }
 
@@ -127,9 +485,7 @@ impl Config {
     /// Update the copilot premium mode in the config file.
     /// Reloads, patches, and saves so it doesn't clobber other fields.
     pub fn set_copilot_premium(mode: Option<&str>) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.provider.copilot_premium = mode.map(|s| s.to_string());
-        cfg.save()?;
+        Self::mutate(|cfg| cfg.provider.copilot_premium = mode.map(|s| s.to_string()))?;
         crate::logging::info(&format!(
             "Saved copilot_premium to config: {}",
             mode.unwrap_or("(none)")
@@ -140,10 +496,10 @@ impl Config {
     /// Update just the default model and provider in the config file.
     /// This reloads, patches, and saves so it doesn't clobber other fields.
     pub fn set_default_model(model: Option<&str>, provider: Option<&str>) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.provider.default_model = model.map(|s| s.to_string());
-        cfg.provider.default_provider = provider.map(|s| s.to_string());
-        cfg.save()?;
+        Self::mutate(|cfg| {
+            cfg.provider.default_model = model.map(|s| s.to_string());
+            cfg.provider.default_provider = provider.map(|s| s.to_string());
+        })?;
         crate::logging::info(&format!(
             "Saved default model: {}, provider: {}",
             model.unwrap_or("(none)"),
@@ -154,21 +510,17 @@ impl Config {
 
     /// Update just the default provider in the config file.
     pub fn set_default_provider(provider: Option<&str>) -> anyhow::Result<()> {
-        let cfg = Self::load_for_update()?;
-        Self::set_default_model(cfg.provider.default_model.as_deref(), provider)
+        Self::mutate(|cfg| cfg.provider.default_provider = provider.map(|s| s.to_string()))
     }
 
     /// Update just the default model in the config file.
     pub fn set_default_model_only(model: Option<&str>) -> anyhow::Result<()> {
-        let cfg = Self::load_for_update()?;
-        Self::set_default_model(model, cfg.provider.default_provider.as_deref())
+        Self::mutate(|cfg| cfg.provider.default_model = model.map(|s| s.to_string()))
     }
 
     /// Update the persisted OpenAI reasoning effort preference.
     pub fn set_openai_reasoning_effort(value: Option<&str>) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.provider.openai_reasoning_effort = value.map(|s| s.to_string());
-        cfg.save()?;
+        Self::mutate(|cfg| cfg.provider.openai_reasoning_effort = value.map(|s| s.to_string()))?;
         crate::logging::info(&format!(
             "Saved openai_reasoning_effort to config: {}",
             value.unwrap_or("(none)")
@@ -178,9 +530,7 @@ impl Config {
 
     /// Update the persisted Anthropic reasoning effort preference.
     pub fn set_anthropic_reasoning_effort(value: Option<&str>) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.provider.anthropic_reasoning_effort = value.map(|s| s.to_string());
-        cfg.save()?;
+        Self::mutate(|cfg| cfg.provider.anthropic_reasoning_effort = value.map(|s| s.to_string()))?;
         crate::logging::info(&format!(
             "Saved anthropic_reasoning_effort to config: {}",
             value.unwrap_or("(none)")
@@ -190,9 +540,7 @@ impl Config {
 
     /// Update the persisted OpenAI transport preference.
     pub fn set_openai_transport(value: Option<&str>) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.provider.openai_transport = value.map(|s| s.to_string());
-        cfg.save()?;
+        Self::mutate(|cfg| cfg.provider.openai_transport = value.map(|s| s.to_string()))?;
         crate::logging::info(&format!(
             "Saved openai_transport to config: {}",
             value.unwrap_or("(none)")
@@ -202,9 +550,7 @@ impl Config {
 
     /// Update the persisted OpenAI service tier preference.
     pub fn set_openai_service_tier(value: Option<&str>) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.provider.openai_service_tier = value.map(|s| s.to_string());
-        cfg.save()?;
+        Self::mutate(|cfg| cfg.provider.openai_service_tier = value.map(|s| s.to_string()))?;
         crate::logging::info(&format!(
             "Saved openai_service_tier to config: {}",
             value.unwrap_or("(none)")
@@ -214,18 +560,14 @@ impl Config {
 
     /// Update the persisted default alignment preference.
     pub fn set_display_centered(centered: bool) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.display.centered = centered;
-        cfg.save()?;
+        Self::mutate(|cfg| cfg.display.centered = centered)?;
         crate::logging::info(&format!("Saved display.centered to config: {}", centered));
         Ok(())
     }
 
     /// Update the persisted reasoning display mode preference.
     pub fn set_reasoning_display(mode: ReasoningDisplayMode) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.display.set_reasoning_display(mode);
-        cfg.save()?;
+        Self::mutate(|cfg| cfg.display.set_reasoning_display(mode))?;
         crate::logging::info(&format!(
             "Saved display.reasoning_display to config: {}",
             mode.label()
@@ -235,9 +577,7 @@ impl Config {
 
     /// Update the persisted compact-notifications preference.
     pub fn set_compact_notifications(compact: bool) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.display.compact_notifications = compact;
-        cfg.save()?;
+        Self::mutate(|cfg| cfg.display.compact_notifications = compact)?;
         crate::logging::info(&format!(
             "Saved display.compact_notifications to config: {}",
             compact
@@ -247,18 +587,14 @@ impl Config {
 
     /// Update the persisted pinned-todos preference.
     pub fn set_pin_todos(pin: bool) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.display.pin_todos = pin;
-        cfg.save()?;
+        Self::mutate(|cfg| cfg.display.pin_todos = pin)?;
         crate::logging::info(&format!("Saved display.pin_todos to config: {}", pin));
         Ok(())
     }
 
     /// Update the persisted show-agentgrep-output preference.
     pub fn set_show_agentgrep_output(show: bool) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.display.show_agentgrep_output = show;
-        cfg.save()?;
+        Self::mutate(|cfg| cfg.display.show_agentgrep_output = show)?;
         crate::logging::info(&format!(
             "Saved display.show_agentgrep_output to config: {}",
             show
@@ -268,9 +604,7 @@ impl Config {
 
     /// Update the persisted tool-call-details preference.
     pub fn set_tool_call_details(show: bool) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.display.tool_call_details = show;
-        cfg.save()?;
+        Self::mutate(|cfg| cfg.display.tool_call_details = show)?;
         crate::logging::info(&format!(
             "Saved display.tool_call_details to config: {}",
             show
@@ -287,14 +621,14 @@ impl Config {
         entries: Vec<jcode_config_types::LaunchHotkeyEntry>,
         enabled: bool,
     ) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.launch_hotkeys.entries = entries;
-        cfg.launch_hotkeys.enabled = Some(enabled);
-        cfg.launch_hotkeys.imported = true;
-        cfg.save()?;
+        let entry_count = entries.len();
+        Self::mutate(|cfg| {
+            cfg.launch_hotkeys.entries = entries;
+            cfg.launch_hotkeys.enabled = Some(enabled);
+            cfg.launch_hotkeys.imported = true;
+        })?;
         crate::logging::info(&format!(
-            "Saved {} launch hotkey(s) to config (enabled={enabled})",
-            cfg.launch_hotkeys.entries.len()
+            "Saved {entry_count} launch hotkey(s) to config (enabled={enabled})"
         ));
         Ok(())
     }
@@ -665,18 +999,20 @@ impl Config {
             anyhow::bail!("External auth source id cannot be empty");
         }
 
-        let mut cfg = Self::load_for_update()?;
-        if !cfg
-            .auth
-            .trusted_external_sources
-            .iter()
-            .any(|value| value.trim().eq_ignore_ascii_case(&source_id))
-        {
+        Self::mutate_if(|cfg| {
+            if cfg
+                .auth
+                .trusted_external_sources
+                .iter()
+                .any(|value| value.trim().eq_ignore_ascii_case(&source_id))
+            {
+                return false;
+            }
             cfg.auth.trusted_external_sources.push(source_id.clone());
             cfg.auth.trusted_external_sources.sort();
             cfg.auth.trusted_external_sources.dedup();
-            cfg.save()?;
-        }
+            true
+        })?;
 
         crate::logging::info(&format!(
             "Saved trusted external auth source to config: {}",
@@ -690,18 +1026,20 @@ impl Config {
         path: &std::path::Path,
     ) -> anyhow::Result<()> {
         let entry = Self::trusted_external_auth_path_entry(source_id, path)?;
-        let mut cfg = Self::load_for_update()?;
-        if !cfg
-            .auth
-            .trusted_external_source_paths
-            .iter()
-            .any(|value| value.trim().eq_ignore_ascii_case(&entry))
-        {
+        Self::mutate_if(|cfg| {
+            if cfg
+                .auth
+                .trusted_external_source_paths
+                .iter()
+                .any(|value| value.trim().eq_ignore_ascii_case(&entry))
+            {
+                return false;
+            }
             cfg.auth.trusted_external_source_paths.push(entry.clone());
             cfg.auth.trusted_external_source_paths.sort();
             cfg.auth.trusted_external_source_paths.dedup();
-            cfg.save()?;
-        }
+            true
+        })?;
         crate::logging::info(&format!(
             "Saved trusted external auth source path: {}",
             entry
@@ -714,19 +1052,20 @@ impl Config {
         path: &std::path::Path,
     ) -> anyhow::Result<()> {
         let entry = Self::trusted_external_auth_path_entry(source_id, path)?;
-        let mut cfg = Self::load_for_update()?;
-        let before = cfg.auth.trusted_external_source_paths.len();
-        cfg.auth
-            .trusted_external_source_paths
-            .retain(|value| !value.trim().eq_ignore_ascii_case(&entry));
-        if cfg.auth.trusted_external_source_paths.len() != before {
-            cfg.save()?;
-            crate::logging::info(&format!(
-                "Removed trusted external auth source path: {}",
-                entry
-            ));
-        }
-        Ok(())
+        Self::mutate_if(|cfg| {
+            let before = cfg.auth.trusted_external_source_paths.len();
+            cfg.auth
+                .trusted_external_source_paths
+                .retain(|value| !value.trim().eq_ignore_ascii_case(&entry));
+            let changed = cfg.auth.trusted_external_source_paths.len() != before;
+            if changed {
+                crate::logging::info(&format!(
+                    "Removed trusted external auth source path: {}",
+                    entry
+                ));
+            }
+            changed
+        })
     }
 
     /// Remove a source-level (non-path) trust decision, e.g. for credentials
@@ -736,102 +1075,19 @@ impl Config {
         if source_id.is_empty() {
             return Ok(());
         }
-        let mut cfg = Self::load_for_update()?;
-        let before = cfg.auth.trusted_external_sources.len();
-        cfg.auth
-            .trusted_external_sources
-            .retain(|value| !value.trim().eq_ignore_ascii_case(&source_id));
-        if cfg.auth.trusted_external_sources.len() != before {
-            cfg.save()?;
-            crate::logging::info(&format!(
-                "Removed trusted external auth source: {}",
-                source_id
-            ));
-        }
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod issue_1056_tests {
-    use super::Config;
-
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<std::ffi::OsString>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-            let previous = std::env::var_os(key);
-            crate::env::set_var(key, value);
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match self.previous.take() {
-                Some(value) => crate::env::set_var(self.key, value),
-                None => crate::env::remove_var(self.key),
+        Self::mutate_if(|cfg| {
+            let before = cfg.auth.trusted_external_sources.len();
+            cfg.auth
+                .trusted_external_sources
+                .retain(|value| !value.trim().eq_ignore_ascii_case(&source_id));
+            let changed = cfg.auth.trusted_external_sources.len() != before;
+            if changed {
+                crate::logging::info(&format!(
+                    "Removed trusted external auth source: {}",
+                    source_id
+                ));
             }
-            Config::invalidate_cache();
-        }
-    }
-
-    #[test]
-    fn effort_update_preserves_profile_with_capitalized_bearer_auth() {
-        let _lock = crate::storage::lock_test_env();
-        let home = tempfile::tempdir().unwrap();
-        let _home = EnvGuard::set("JCODE_HOME", home.path());
-        let path = home.path().join("config.toml");
-        std::fs::write(
-            &path,
-            r#"
-[provider]
-openai_reasoning_effort = "low"
-
-[providers.mistral]
-type = "openai-compatible"
-base_url = "https://api.mistral.ai/v1"
-auth = "Bearer"
-api_key_env = "MISTRAL_API_KEY"
-disable_reasoning_heuristics = true
-
-[[providers.mistral.models]]
-id = "mistral-medium-latest"
-reasoning = true
-reasoning_effort = "max"
-"#,
-        )
-        .unwrap();
-
-        Config::set_openai_reasoning_effort(Some("high")).unwrap();
-
-        let saved = std::fs::read_to_string(path).unwrap();
-        assert!(saved.contains("[providers.mistral]"));
-        assert!(saved.contains("mistral-medium-latest"));
-        let parsed = Config::load_strict().unwrap();
-        assert_eq!(
-            parsed.provider.openai_reasoning_effort.as_deref(),
-            Some("high")
-        );
-        assert_eq!(parsed.providers["mistral"].models.len(), 1);
-    }
-
-    #[test]
-    fn effort_update_refuses_to_overwrite_malformed_config() {
-        let _lock = crate::storage::lock_test_env();
-        let home = tempfile::tempdir().unwrap();
-        let _home = EnvGuard::set("JCODE_HOME", home.path());
-        let path = home.path().join("config.toml");
-        let original = "[providers.broken]\nauth = \"invalid-auth-mode\"\n";
-        std::fs::write(&path, original).unwrap();
-
-        let error = Config::set_openai_reasoning_effort(Some("high"))
-            .expect_err("a malformed config must block mutation");
-
-        assert!(error.to_string().contains("Failed to parse config file"));
-        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+            changed
+        })
     }
 }

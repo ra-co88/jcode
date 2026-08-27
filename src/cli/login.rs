@@ -76,6 +76,7 @@ enum PendingScriptableLogin {
     Claude {
         account_label: String,
         verifier: String,
+        state: String,
         redirect_uri: String,
     },
     Openai {

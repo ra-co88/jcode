@@ -117,6 +117,7 @@ fn pending_prompt_transition_invalidates_the_memo() {
     // Enter a pending-login state with the same input buffer and no epoch bump.
     app.pending_login = Some(PendingLogin::ClaudeAccount {
         verifier: "test-verifier".to_string(),
+        expected_state: "test-state".to_string(),
         label: "test-account".to_string(),
         redirect_uri: None,
     });
