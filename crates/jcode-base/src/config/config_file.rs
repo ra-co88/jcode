@@ -380,6 +380,10 @@ impl Config {
     /// through [`Self::mutate`], which holds the lock across the whole cycle.
     pub fn save(&self) -> anyhow::Result<()> {
         let _guard = CONFIG_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Serialize direct physical writes with mutate_if() writers in other
+        // processes too. A caller that needs an atomic read-modify-write must
+        // still use mutate()/mutate_if() so the read also occurs under the lock.
+        let _file_lock = ConfigFileLock::acquire();
         self.save_locked()
     }
 

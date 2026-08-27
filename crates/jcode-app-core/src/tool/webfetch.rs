@@ -45,15 +45,20 @@ impl WebFetchTool {
     /// when there is nothing to pin (literal-IP URL), so the caller uses the
     /// default client. `resolve()` overrides DNS for this host only, so reqwest
     /// connects to the checked address instead of re-resolving.
-    fn pinned_client(&self, target: &super::ssrf::GuardedTarget) -> Option<reqwest::Client> {
-        let host = target.host.as_deref()?;
-        let addr = target.pinned?;
+    fn pinned_client(&self, target: &super::ssrf::GuardedTarget) -> Result<reqwest::Client> {
+        let host = target
+            .host
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("DNS guard returned no host to pin"))?;
+        let addr = target
+            .pinned
+            .ok_or_else(|| anyhow::anyhow!("DNS guard returned no address to pin"))?;
         reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (compatible; JCode/1.0)")
             .redirect(reqwest::redirect::Policy::none())
             .resolve(host, addr)
             .build()
-            .ok()
+            .map_err(|e| anyhow::anyhow!("Failed to build pinned SSRF-safe HTTP client: {e}"))
     }
 }
 
@@ -119,9 +124,15 @@ impl Tool for WebFetchTool {
         let mut redirects = 0usize;
         let response = loop {
             let target = super::ssrf::guard_public_url_pinned(&current_url).await?;
-            let client = self
-                .pinned_client(&target)
-                .unwrap_or_else(|| self.client.clone());
+            let client = if target.host.is_some() {
+                // A DNS-resolved target must use the exact address that passed
+                // the SSRF check. Never fall back to an unpinned client: that
+                // would reintroduce the resolve/connect TOCTOU gap on a client
+                // construction failure.
+                self.pinned_client(&target)?
+            } else {
+                self.client.clone()
+            };
             let resp = client
                 .get(&current_url)
                 .header(
