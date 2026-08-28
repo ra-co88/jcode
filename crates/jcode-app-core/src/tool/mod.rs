@@ -16,6 +16,7 @@ mod destructive_gate;
 mod discover;
 mod discover_secrets;
 mod edit;
+pub(crate) mod edit_approval;
 mod feedback;
 mod gmail;
 mod goal;

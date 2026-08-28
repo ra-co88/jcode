@@ -74,7 +74,7 @@ impl Tool for PatchTool {
 
         for patch in patches {
             let resolved_path = ctx.resolve_path(Path::new(&patch.path));
-            let result = apply_patch_with_diff(&patch, &resolved_path).await;
+            let result = apply_patch_with_diff(&ctx, &patch, &resolved_path).await;
             match result {
                 Ok((msg, diff)) => {
                     if diff.is_empty() {
@@ -211,11 +211,26 @@ fn parse_hunk(lines: &[&str], i: &mut usize) -> Option<Hunk> {
 }
 
 /// Apply a patch and return (status_message, diff_output)
-async fn apply_patch_with_diff(patch: &FilePatch, path: &Path) -> Result<(String, String)> {
+async fn apply_patch_with_diff(
+    ctx: &ToolContext,
+    patch: &FilePatch,
+    path: &Path,
+) -> Result<(String, String)> {
     // Handle deletion
     if patch.is_delete {
         if path.exists() {
             let old_content = tokio::fs::read_to_string(path).await.unwrap_or_default();
+            if let Some(refusal) = super::edit_approval::refusal_text_for(
+                ctx,
+                &patch.path,
+                true,
+                Some(old_content.as_str()),
+                "",
+            )
+            .await
+            {
+                anyhow::bail!("{refusal}");
+            }
             tokio::fs::remove_file(path).await?;
             let diff = generate_diff(&old_content, "", 1);
             return Ok(("deleted".to_string(), diff));
@@ -230,11 +245,6 @@ async fn apply_patch_with_diff(patch: &FilePatch, path: &Path) -> Result<(String
             return Err(anyhow::anyhow!("file already exists"));
         }
 
-        // Create parent directories
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
         // Collect all new lines from hunks
         let content: String = patch
             .hunks
@@ -242,6 +252,19 @@ async fn apply_patch_with_diff(patch: &FilePatch, path: &Path) -> Result<(String
             .flat_map(|h| h.new_lines.iter())
             .map(|l| format!("{}\n", l))
             .collect();
+
+        // Verify-then-commit: confirm the creation before directories are made.
+        if let Some(refusal) =
+            super::edit_approval::refusal_text_for(ctx, &patch.path, false, None, content.as_str())
+                .await
+        {
+            anyhow::bail!("{refusal}");
+        }
+
+        // Create parent directories
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
 
         tokio::fs::write(path, &content).await?;
         let diff = generate_diff("", &content, 1);
@@ -269,6 +292,18 @@ async fn apply_patch_with_diff(patch: &FilePatch, path: &Path) -> Result<(String
     }
 
     let new_content = lines.join("\n") + "\n";
+    // Verify-then-commit: hold the computed modification for user approval.
+    if let Some(refusal) = super::edit_approval::refusal_text_for(
+        ctx,
+        &patch.path,
+        true,
+        Some(old_content.as_str()),
+        new_content.as_str(),
+    )
+    .await
+    {
+        anyhow::bail!("{refusal}");
+    }
     tokio::fs::write(path, &new_content).await?;
 
     let diff = generate_diff(&old_content, &new_content, first_line);
