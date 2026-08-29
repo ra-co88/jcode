@@ -50,7 +50,7 @@ open = "5"
 # OAuth / hashing helpers used by the login + account UI
 base64 = "0.22"
 sha2 = "0.10"
-rand = "0.9.3"
+rand = "0.10.1"
 hex = "0.4"
 url = "2"
 urlencoding = "2"
