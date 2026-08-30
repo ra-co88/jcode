@@ -93,6 +93,14 @@ impl Tool for ApplyPatchTool {
             match hunk {
                 PatchHunk::AddFile { path, contents } => {
                     let resolved = ctx.resolve_path(Path::new(path));
+                    // Verify-then-commit: confirm file creation before mkdir/write.
+                    if let Some(refusal) =
+                        super::edit_approval::refusal_text_for(&ctx, path, false, None, contents)
+                            .await
+                    {
+                        results.push(format!("✗ {path}: {refusal}"));
+                        continue;
+                    }
                     if let Some(parent) = resolved.parent() {
                         tokio::fs::create_dir_all(parent).await?;
                     }
@@ -133,6 +141,20 @@ impl Tool for ApplyPatchTool {
                     let old_contents = tokio::fs::read_to_string(&resolved)
                         .await
                         .unwrap_or_default();
+                    // Verify-then-commit: a delete is the biggest mutation of
+                    // all; hold it for confirmation like any other edit.
+                    if let Some(refusal) = super::edit_approval::refusal_text_for(
+                        &ctx,
+                        path,
+                        true,
+                        Some(old_contents.as_str()),
+                        "",
+                    )
+                    .await
+                    {
+                        results.push(format!("✗ {path}: {refusal}"));
+                        continue;
+                    }
                     if tokio::fs::remove_file(&resolved).await.is_ok() {
                         let diff = generate_diff_summary(&old_contents, "");
                         publish_file_touch(
@@ -164,6 +186,23 @@ impl Tool for ApplyPatchTool {
                             let diff = generate_diff_summary(&old_contents, &new_contents);
                             if let Some(dest) = move_to {
                                 let dest_resolved = ctx.resolve_path(Path::new(dest));
+                                // Verify-then-commit: moving rewrites the
+                                // destination (and removes the source); gate on
+                                // the destination diff.
+                                let dest_existed = dest_resolved.exists();
+                                let dest_old = tokio::fs::read_to_string(&dest_resolved).await.ok();
+                                if let Some(refusal) = super::edit_approval::refusal_text_for(
+                                    &ctx,
+                                    dest,
+                                    dest_existed,
+                                    dest_old.as_deref(),
+                                    new_contents.as_str(),
+                                )
+                                .await
+                                {
+                                    results.push(format!("✗ {dest}: {refusal}"));
+                                    continue;
+                                }
                                 if let Some(parent) = dest_resolved.parent() {
                                     tokio::fs::create_dir_all(parent).await?;
                                 }
@@ -204,6 +243,19 @@ impl Tool for ApplyPatchTool {
                                     ));
                                 }
                             } else {
+                                // Verify-then-commit: hold in-place patch updates.
+                                if let Some(refusal) = super::edit_approval::refusal_text_for(
+                                    &ctx,
+                                    path,
+                                    true,
+                                    Some(old_contents.as_str()),
+                                    new_contents.as_str(),
+                                )
+                                .await
+                                {
+                                    results.push(format!("✗ {path}: {refusal}"));
+                                    continue;
+                                }
                                 tokio::fs::write(&resolved, &new_contents).await?;
                                 publish_file_touch(
                                     &ctx,

@@ -651,6 +651,11 @@ pub struct ToolConfig {
         alias = "mcp_tools_auto_threshold_tokens"
     )]
     pub mcp_tools_token_threshold: usize,
+    /// Verify-then-commit: hold non-trivial file edits for explicit user
+    /// approval before the write lands (`y`/`n`/`all` reply). Trivial changes
+    /// of up to a few lines still apply without asking. Defaults to off; see
+    /// docs/VERIFY_THEN_COMMIT.md for the current client-surface coverage.
+    pub verify_file_edits: bool,
 }
 
 impl Default for ToolConfig {
@@ -662,6 +667,7 @@ impl Default for ToolConfig {
             disable_base_tools: false,
             mcp_tools: McpToolsMode::Auto,
             mcp_tools_token_threshold: 8_000,
+            verify_file_edits: false,
         }
     }
 }

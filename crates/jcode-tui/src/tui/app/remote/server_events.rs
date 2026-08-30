@@ -2847,8 +2847,27 @@ pub(in crate::tui::app) fn handle_server_event(
             }
             false
         }
-        ServerEvent::StdinRequest { .. } => {
-            app.set_status_notice("⌨ Interactive terminal detected (command will timeout)");
+        ServerEvent::StdinRequest {
+            request_id, prompt, ..
+        } => {
+            // Capture the request so the next submitted line goes back as its
+            // reply (remote/key_handling routes Enter/Esc). Empty prompts are
+            // bash-style raw stdin (no visible question); non-empty ones are
+            // shown in the transcript so the user can read the diff/question.
+            app.pending_stdin_answer = Some(crate::tui::app::stdin_answer::PendingStdinAnswer {
+                request_id,
+                prompt: prompt.clone(),
+            });
+            if prompt.is_empty() {
+                app.set_status_notice(
+                    "⌨ A command is waiting for input — type a reply and press Enter",
+                );
+            } else {
+                app.push_display_message(DisplayMessage::system(prompt));
+                app.set_status_notice(
+                    "⌨ Input requested — type a reply (Enter sends, Esc declines)",
+                );
+            }
             false
         }
         _ => false,

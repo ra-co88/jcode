@@ -109,6 +109,20 @@ impl Tool for EditTool {
         // Find line number where edit starts
         let start_line = find_line_number(&content, &params.old_string);
 
+        // Verify-then-commit: hold non-trivial edits for user approval before
+        // the file is modified.
+        if let Some(refusal) = super::edit_approval::refusal_text_for(
+            &ctx,
+            &params.file_path,
+            true,
+            Some(content.as_str()),
+            new_content.as_str(),
+        )
+        .await
+        {
+            return Ok(ToolOutput::new(refusal));
+        }
+
         // Write back
         tokio::fs::write(&path, &new_content).await?;
 

@@ -214,6 +214,7 @@ impl App {
         if self.pending_login.is_some()
             || self.pending_account_input.is_some()
             || self.pending_ssh_remote_name.is_some()
+            || self.pending_stdin_answer.is_some()
         {
             return;
         }

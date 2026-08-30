@@ -59,13 +59,6 @@ impl Tool for WriteTool {
 
         let path = ctx.resolve_path(Path::new(&params.file_path));
 
-        // Create parent directories if needed
-        if let Some(parent) = path.parent()
-            && !parent.exists()
-        {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
         // Check if file existed before and read old content for diff
         let existed = path.exists();
         let old_content = if existed {
@@ -73,6 +66,27 @@ impl Tool for WriteTool {
         } else {
             None
         };
+
+        // Verify-then-commit: hold non-trivial writes for user approval
+        // before anything (including parent directories) touches disk.
+        if let Some(refusal) = super::edit_approval::refusal_text_for(
+            &ctx,
+            &params.file_path,
+            existed,
+            old_content.as_deref(),
+            &params.content,
+        )
+        .await
+        {
+            return Ok(ToolOutput::new(refusal));
+        }
+
+        // Create parent directories if needed
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+        {
+            tokio::fs::create_dir_all(parent).await?;
+        }
 
         // Write the file
         tokio::fs::write(&path, &params.content).await?;

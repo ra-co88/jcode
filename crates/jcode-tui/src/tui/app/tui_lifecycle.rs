@@ -729,6 +729,8 @@ impl App {
             pending_login: None,
             pending_account_input: None,
             pending_ssh_remote_name: None,
+            pending_stdin_answer: None,
+
             force_full_redraw: false,
             force_full_repaint: false,
             last_mouse_scroll: None,
@@ -1175,6 +1177,8 @@ impl App {
             ambient_system_prompt: None,
             pending_login: None,
             pending_account_input: None,
+            pending_stdin_answer: None,
+
             pending_ssh_remote_name: None,
             force_full_redraw: false,
             force_full_repaint: false,
