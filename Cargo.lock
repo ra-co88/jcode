@@ -1214,9 +1214,9 @@ dependencies = [
 
 [[package]]
 name = "cmov"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f88a43d011fc4a6876cb7344703e297c71dda42494fee094d5f7c76bf13f746"
+checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "color_quant"
@@ -3141,7 +3141,7 @@ dependencies = [
  "jcode-update-core",
  "libc",
  "open",
- "rand 0.9.3",
+ "rand 0.10.1",
  "ratatui",
  "regex",
  "reqwest 0.12.28",
@@ -3241,7 +3241,7 @@ dependencies = [
  "open",
  "proctitle",
  "qrcode",
- "rand 0.9.3",
+ "rand 0.10.1",
  "regex",
  "reqwest 0.12.28",
  "rusqlite",
@@ -3316,7 +3316,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "libc",
- "rand 0.9.3",
+ "rand 0.10.1",
  "unicode-properties",
  "unicode-segmentation",
  "windows-sys 0.59.0",
@@ -3396,7 +3396,7 @@ name = "jcode-memory-types"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "rand 0.9.3",
+ "rand 0.10.1",
  "serde",
  "serde_json",
 ]
@@ -3477,7 +3477,7 @@ dependencies = [
  "jcode-selfdev-types",
  "jcode-session-types",
  "jcode-side-panel-types",
- "rand 0.9.3",
+ "rand 0.10.1",
  "serde",
  "serde_json",
 ]
@@ -3635,7 +3635,7 @@ dependencies = [
  "jcode-logging",
  "jcode-message-types",
  "jcode-schema-dialect",
- "rand 0.9.3",
+ "rand 0.10.1",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3927,7 +3927,7 @@ dependencies = [
  "dirs",
  "jcode-core",
  "libc",
- "rand 0.9.3",
+ "rand 0.10.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -4058,7 +4058,7 @@ dependencies = [
  "jcode-tui-workspace",
  "libc",
  "open",
- "rand 0.9.3",
+ "rand 0.10.1",
  "ratatui",
  "regex",
  "serde",
@@ -5810,7 +5810,7 @@ dependencies = [
  "num-traits",
  "ordered-float 5.3.0",
  "palette",
- "rand 0.9.3",
+ "rand 0.9.5",
  "rand_xoshiro",
  "rayon",
  "ref-cast",
@@ -5853,7 +5853,7 @@ dependencies = [
  "bytes",
  "getrandom 0.3.4",
  "lru-slab",
- "rand 0.9.3",
+ "rand 0.9.5",
  "ring",
  "rustc-hash",
  "rustls",
@@ -5919,9 +5919,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.9.3"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ec095654a25171c2124e9e3393a930bddbffdc939556c914957a4c3e0a87166"
+checksum = "b9ef1d0d795eb7d84685bca4f72f3649f064e6641543d3a8c415898726a57b41"
 dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.3",
@@ -7193,9 +7193,9 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "tar"
-version = "0.4.45"
+version = "0.4.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22692a6476a21fa75fdfc11d452fda482af402c008cdbaf3476414e122040973"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
 dependencies = [
  "filetime",
  "libc",
@@ -7518,7 +7518,7 @@ dependencies = [
  "monostate",
  "onig",
  "paste",
- "rand 0.9.3",
+ "rand 0.9.5",
  "rayon",
  "rayon-cond",
  "regex",

@@ -54,7 +54,7 @@ jcode-import-core = { path = "../jcode-import-core" }
 # OAuth
 base64 = "0.22"
 sha2 = "0.10"
-rand = "0.9.3"
+rand = "0.10.1"
 url = "2"
 open = "5"               # Open URLs in browser
 jcode-agent-runtime = { path = "../jcode-agent-runtime" }
