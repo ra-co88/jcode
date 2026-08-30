@@ -35,12 +35,16 @@ user before the write lands:
 
 ## Known gaps / follow-ups
 
-1. **Client answer UX**: the daemon forwards the prompt to connected clients,
-   and both TUI backend (`send_stdin_response`) and server
-   (`handle_stdin_response`) can route replies, but remote-mode status output
-   currently only shows "Interactive terminal detected" rather than capturing
-   the answer. Until that capture mode ships, enabling this flag on such a
-   surface means prompts time out and edits block — keep it off there.
+1. **Client answer UX — SHIPPED (remote TUI).** `ServerEvent::StdinRequest`
+   now arms a pending-answer state in the remote TUI: the prompt is shown in
+   the transcript, **Enter** sends the composer line as the reply
+   (`Request::StdinResponse`), **Esc** declines with an empty reply (which the
+   edit gate treats as a rejection), and other keys keep editing the draft
+   without consuming the request. Interactive bash stdin benefits too —
+   prompts no longer just show a "will timeout" notice.
+   Not yet covered: local (non-remote) sessions route tools without a stdin
+   channel, so the gate there still fails closed (documented above); masked
+   (`is_password`) replies currently render unmasked in the composer.
 2. Timeout is fixed at 5 minutes; a config knob can follow if sessions need
    unattended-but-gated modes.
 3. Path-scoped trust rules ("always allow under `.jcode/skills/`") are not yet
@@ -58,10 +62,11 @@ Run with:
 cargo test -p jcode-app-core --lib edit_approval
 ```
 
-**Local-machine note (2026-08-27):** the full in-workspace run needs ~1.5 GB of
-scratch for the test-profile link and this machine peaked at ~200 MB free, so
-verification used a standalone harness at `/tmp/vtc_scratch` that `#[path]`-
-includes the real `edit_approval.rs` (and, through it, the real tests file)
-against field-identical stubs of `jcode_tool_core` and `config`: all 13 tests
-pass on the shipped source. `cargo check -p jcode-app-core --lib` passed on the
-wiring before the disk filled; re-run the command above when space allows.
+**Local-machine note (2026-08-30):** the full in-workspace run completed after
+disk was freed: `cargo test -p jcode-app-core --lib edit_approval` — **13/13
+pass**. The TUI answer-UX is covered by 4 tests in
+`crates/jcode-tui/src/tui/app/tests/stdin_answer_remote.rs` (capture, Enter
+routing, Esc decline, draft-preserving keys), run with
+`cargo test -p jcode-tui --lib stdin_` plus the `esc_declines other_keys`
+filters — **4/4 pass**. An earlier scratch-harness verification on this machine
+(`#[path]`-including the real module against stubs) is now redundant.

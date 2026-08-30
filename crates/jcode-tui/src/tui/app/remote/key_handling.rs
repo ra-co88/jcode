@@ -317,6 +317,50 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
+    // A pending stdin request (verify-then-commit approval or an interactive
+    // command) owns Enter and Esc: the submitted line becomes its reply.
+    // Enter with an empty buffer is allowed — an empty reply is meaningful
+    // (declines the edit gate, sends a bare line to a command's stdin).
+    if app.pending_stdin_answer.is_some() && matches!(code, KeyCode::Enter | KeyCode::Esc) {
+        // Checked above; take must not run for non-Enter/Esc keys, which
+        // fall through so the user can scroll or edit the draft reply.
+        let pending = app
+            .pending_stdin_answer
+            .take()
+            .expect("pending_stdin_answer checked above");
+        if code == KeyCode::Esc {
+            // Explicit decline so the waiting tool unblocks instead of
+            // running out its timeout.
+            let _ = remote.send_stdin_response(&pending.request_id, "").await;
+            app.set_status_notice("Input request declined");
+            return Ok(());
+        }
+        let reply = std::mem::take(&mut app.input);
+        app.cursor_pos = 0;
+        app.clear_input_undo_history();
+        match remote
+            .send_stdin_response(&pending.request_id, &reply)
+            .await
+        {
+            Ok(()) => {
+                app.set_status_notice(if pending.prompt.is_empty() {
+                    "Input sent".to_string()
+                } else {
+                    "Reply sent".to_string()
+                });
+            }
+            Err(error) => {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to send reply: {error}"
+                )));
+                app.set_status_notice("Reply failed");
+            }
+        }
+        return Ok(());
+    }
+    // Any other key with a pending stdin request falls through unchanged, so
+    // the user can still scroll or edit their draft reply while waiting.
+
     if let Some(ref picker) = app.inline_interactive_state
         && !picker.preview
     {

@@ -49,6 +49,18 @@ pub enum AppRuntimeMode {
     TestHarness,
 }
 
+/// A pending stdin prompt from the server (verify-then-commit approval, or an
+/// interactive command waiting on input). While set, the next submitted line
+/// is routed to `Request::StdinResponse` instead of the chat, and Esc
+/// declines with an empty reply so the waiting tool unblocks.
+pub(crate) mod stdin_answer {
+    #[derive(Debug, Clone)]
+    pub(crate) struct PendingStdinAnswer {
+        pub(crate) request_id: String,
+        pub(crate) prompt: String,
+    }
+}
+
 mod auth;
 mod auth_account_picker_saved_accounts;
 mod catchup;
@@ -1588,6 +1600,9 @@ pub struct App {
     pending_account_input: Option<auth::PendingAccountInput>,
     /// Pending SSH remote target prompt. Stores the friendly remote name.
     pending_ssh_remote_name: Option<String>,
+    /// Pending stdin prompt from the server: the next submitted line is sent
+    /// as its reply (Enter), Esc declines with an empty line.
+    pending_stdin_answer: Option<stdin_answer::PendingStdinAnswer>,
     /// One-shot flag: force the next paint to clear the terminal first.
     /// Needed after native terminal scrolls mutate the screen outside ratatui's diff model.
     force_full_redraw: bool,
