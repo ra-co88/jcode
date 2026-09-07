@@ -465,6 +465,7 @@ pub async fn login_claude(no_browser: bool) -> Result<OAuthTokens> {
             &manual_auth_url,
             "No browser on this machine? Scan this QR on another device, finish login there, then paste the full callback URL back here:",
             "    ",
+            crate::auth::browser_suppressed(no_browser),
         ) {
             eprintln!("{qr}\n");
         }
@@ -530,6 +531,7 @@ pub async fn login_claude(no_browser: bool) -> Result<OAuthTokens> {
         &auth_url,
         "Scan this QR on another device if this machine has no browser:",
         "    ",
+        crate::auth::browser_suppressed(no_browser),
     ) {
         eprintln!("{qr}\n");
     }
@@ -865,6 +867,7 @@ pub async fn login_openai(no_browser: bool) -> Result<OAuthTokens> {
         &auth_url,
         "Scan this QR on another device if this machine has no browser:",
         "    ",
+        crate::auth::browser_suppressed(no_browser),
     ) {
         eprintln!("{qr}\n");
     }
