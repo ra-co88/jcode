@@ -216,6 +216,10 @@ fn description_tells_models_to_check_status_before_setup() {
 }
 
 #[cfg(unix)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 #[tokio::test]
 async fn readiness_does_not_trust_a_stale_setup_marker() {
     use std::os::unix::fs::PermissionsExt;

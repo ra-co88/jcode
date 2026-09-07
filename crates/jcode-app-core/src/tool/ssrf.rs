@@ -18,6 +18,13 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+/// Boolean form of [`guard_public_url_pinned`] for tests: `Ok(())` when the
+/// URL targets only public addresses, `Err` naming the blocked class.
+#[cfg(test)]
+pub(crate) async fn guard_public_url(raw_url: &str) -> anyhow::Result<()> {
+    guard_public_url_pinned(raw_url).await.map(|_| ())
+}
+
 /// What a passing SSRF check resolved to, so the caller can *pin* the
 /// connection to the exact validated address (closing the TOCTOU/DNS-rebinding
 /// gap: reqwest reuses this address instead of re-resolving at connect time).

@@ -14,7 +14,10 @@
 // `#[cfg(target_os = "macos")]` notice/install paths) are compiled out, so the
 // helpers the tests don't call directly look dead. They are real macOS code, so
 // silence dead_code only for that specific build shape instead of deleting them.
+// The mirror image holds for the `#[cfg(any(test, target_os = "linux"))]` Linux
+// hotkey/compositor helpers on a non-Linux test build.
 #![cfg_attr(all(test, not(target_os = "macos")), allow(dead_code))]
+#![cfg_attr(all(test, not(target_os = "linux")), allow(dead_code))]
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use anyhow::Context;

@@ -121,17 +121,19 @@ fn ssh_remote_reconnect_waits_for_authoritative_history_without_local_reload() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             let mut remote = crate::tui::backend::RemoteConnection::dummy();
-            let mut state = super::remote::RemoteRunState::default();
-            state.reconnect_attempts = 1;
-            state.server_reload_in_progress = true;
-            assert!(!super::remote::reload_handoff_active(&state));
+            let state = &mut super::remote::RemoteRunState {
+                reconnect_attempts: 1,
+                server_reload_in_progress: true,
+                ..Default::default()
+            };
+            assert!(!super::remote::reload_handoff_active(state));
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
             super::remote::handle_post_connect(
                 &mut app,
                 &mut terminal,
                 &mut remote,
-                &mut state,
+                state,
                 Some("remote-only-session"),
             )
             .await

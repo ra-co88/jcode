@@ -125,6 +125,10 @@ fn profile_shadowing_builtin_name_with_other_base_is_user_named() {
 /// the provider from it, perform a live `/models` fetch whose catalog omits the
 /// user's declared model, and assert the picker still offers it.
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide env lock must serialize these async setup paths; that is the isolation under test"
+)]
 async fn config_toml_models_survive_a_real_catalog_fetch() {
     let _lock = ENV_LOCK.lock();
     let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");

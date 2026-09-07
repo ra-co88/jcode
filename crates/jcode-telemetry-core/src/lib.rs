@@ -1,3 +1,8 @@
+// The HTTP senders, queue workers, and their queue constants are real
+// production delivery code behind `#[cfg(not(test))]` arms; in a *test* build
+// those arms are compiled out and the helpers look dead.
+#![cfg_attr(test, allow(dead_code))]
+
 use jcode_logging as logging;
 use jcode_storage as storage;
 mod concurrency;
@@ -21,7 +26,9 @@ use serde_json::Value;
 use state_support::*;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
+#[cfg(not(test))]
+use std::sync::mpsc::TrySendError;
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -1414,7 +1421,7 @@ fn send_transcript_payload(payload: Value) -> bool {
         if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
             emitted.push(payload);
         }
-        return true;
+        true
     }
     #[cfg(not(test))]
     match transcript_background_sender().try_send(payload) {
@@ -1438,7 +1445,7 @@ fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
         if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
             emitted.push(payload);
         }
-        return true;
+        true
     }
     #[cfg(not(test))]
     match mode {

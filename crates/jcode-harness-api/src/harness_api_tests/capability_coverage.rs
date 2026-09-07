@@ -27,7 +27,10 @@ enum Disposition {
     /// model, and would mean nothing to a third-party client.
     ClientInternal,
     /// A real gap. Worth exposing, not yet done. Every entry needs a reason
-    /// that says what a client cannot build without it.
+    /// that says what a client cannot build without it. Empty today: the
+    /// ledger is fully Covered/ClientInternal, but the variant stays so a new
+    /// gap needs only a ledger entry, not an enum change.
+    #[allow(dead_code)]
     Gap(&'static str),
 }
 
@@ -81,8 +84,8 @@ const LEDGER: &[(&str, Disposition)] = &[
 /// Requests the reference clients (TUI) send to the daemon.
 fn reference_client_requests() -> BTreeSet<String> {
     let mut found = BTreeSet::new();
-    for dir in ["../jcode-tui/src"] {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
+    {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../jcode-tui/src");
         collect_requests(&root, &mut found);
     }
     // covered by construction and would otherwise pollute the diff.

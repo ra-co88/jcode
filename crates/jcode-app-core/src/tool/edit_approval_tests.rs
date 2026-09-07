@@ -126,6 +126,10 @@ async fn enabled_without_channel_blocks_instead_of_silent_write() {
     }
 }
 
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 #[tokio::test]
 async fn approve_reply_lets_the_write_proceed() {
     let _guard = bulk_guard();
@@ -143,6 +147,10 @@ async fn approve_reply_lets_the_write_proceed() {
     clear_bulk_accepted_for_tests();
 }
 
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 #[tokio::test]
 async fn reject_reply_blocks_and_names_the_file() {
     let _guard = bulk_guard();
@@ -165,6 +173,10 @@ async fn reject_reply_blocks_and_names_the_file() {
     clear_bulk_accepted_for_tests();
 }
 
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 #[tokio::test]
 async fn dropped_responder_blocks_rather_than_writes() {
     let _guard = bulk_guard();
@@ -185,6 +197,10 @@ async fn dropped_responder_blocks_rather_than_writes() {
     clear_bulk_accepted_for_tests();
 }
 
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 #[tokio::test]
 async fn bulk_accept_answer_covers_later_edits_in_the_session() {
     let _guard = bulk_guard();

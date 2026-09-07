@@ -480,6 +480,10 @@ mod public_acceptance_tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process-wide home lock must serialize these async setup paths; that is the isolation under test"
+    )]
     async fn public_socket_keeps_its_attachment_after_another_sessions_state() {
         let _home_lock = translate::jcode_home_test_lock();
         let root = std::env::temp_dir().join(format!(
