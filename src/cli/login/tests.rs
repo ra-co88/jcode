@@ -238,6 +238,10 @@ impl Drop for ScopedLoginTestHome {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock must be held across the concurrent login starts; that serialization is exactly what this test exercises"
+)]
 async fn scoped_concurrent_begin_completion_and_cancel_are_isolated() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().unwrap();

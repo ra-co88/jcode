@@ -126,8 +126,8 @@ impl Tool for MultiEditTool {
         }
 
         // Write the result (verify-then-commit applies to whole-file rewrites)
-        if !applied.is_empty() {
-            if let Some(refusal) = super::edit_approval::refusal_text_for(
+        if !applied.is_empty()
+            && let Some(refusal) = super::edit_approval::refusal_text_for(
                 &ctx,
                 &params.file_path,
                 true,
@@ -135,9 +135,8 @@ impl Tool for MultiEditTool {
                 content.as_str(),
             )
             .await
-            {
-                return Ok(ToolOutput::new(refusal));
-            }
+        {
+            return Ok(ToolOutput::new(refusal));
         }
         tokio::fs::write(&path, &content).await?;
 

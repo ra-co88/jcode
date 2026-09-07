@@ -18,13 +18,6 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-/// Validate that `raw_url` targets a public host, resolving DNS and checking
-/// every returned address. Returns `Ok(())` when safe, or `Err` with a clear,
-/// user-facing refusal naming the blocked class.
-pub(crate) async fn guard_public_url(raw_url: &str) -> anyhow::Result<()> {
-    guard_public_url_pinned(raw_url).await.map(|_| ())
-}
-
 /// What a passing SSRF check resolved to, so the caller can *pin* the
 /// connection to the exact validated address (closing the TOCTOU/DNS-rebinding
 /// gap: reqwest reuses this address instead of re-resolving at connect time).
@@ -36,8 +29,9 @@ pub(crate) struct GuardedTarget {
     pub pinned: Option<std::net::SocketAddr>,
 }
 
-/// Like [`guard_public_url`] but returns a [`GuardedTarget`] so the caller can
-/// pin the connection to a validated IP.
+/// Validate that `raw_url` targets a public host, resolving DNS and checking
+/// every returned address. Returns a [`GuardedTarget`] the caller pins the
+/// connection to, so the IP we checked is the IP actually connected to.
 pub(crate) async fn guard_public_url_pinned(raw_url: &str) -> anyhow::Result<GuardedTarget> {
     let url = url::Url::parse(raw_url)
         .map_err(|e| anyhow::anyhow!("Could not parse URL for safety check: {e}"))?;
