@@ -121,6 +121,7 @@ pub(crate) fn bash_parameters_schema() -> serde_json::Value {
 ///
 /// `None` means "no destructive signal detected, proceed"; `Some(reason)` is a
 /// refusal/reflection prompt to surface to the model, mirroring the bash gate.
+#[cfg(target_os = "macos")]
 pub(crate) fn applescript_destructive_refusal(
     script: &str,
     justification: Option<&str>,
@@ -193,6 +194,7 @@ pub(crate) fn applescript_destructive_refusal(
 }
 
 /// A shell payload discovered inside an AppleScript/JXA source.
+#[cfg(target_os = "macos")]
 enum ShellPayload {
     /// A shell command we could read as a string literal — check it directly.
     Literal(String),
@@ -207,6 +209,7 @@ enum ShellPayload {
 /// When a verb's argument is a static string literal we return it verbatim for
 /// the #604 gate; when it is a computed value we return [`ShellPayload::Dynamic`]
 /// so the caller can hold it rather than silently allow it.
+#[cfg(target_os = "macos")]
 fn extract_embedded_shell_commands(script: &str) -> Vec<ShellPayload> {
     let lower = script.to_ascii_lowercase();
     // Verbs that hand a string to a shell. Keep this list tight and documented.
@@ -235,6 +238,7 @@ fn extract_embedded_shell_commands(script: &str) -> Vec<ShellPayload> {
 /// shell verb — i.e. after only insignificant tokens (whitespace, `(`, `:`).
 /// Returns `None` if the argument is not an immediate literal (e.g. a variable),
 /// which the caller treats as a non-inspectable dynamic argument.
+#[cfg(target_os = "macos")]
 fn literal_at_argument_start(s: &str) -> Option<String> {
     let mut chars = s.char_indices();
     for (i, c) in chars.by_ref() {
@@ -252,6 +256,7 @@ fn literal_at_argument_start(s: &str) -> Option<String> {
 
 /// Read the first double- or single-quoted string literal in `s`, unescaping
 /// the common `\"` / `\'` sequences. Returns `None` if no literal is found.
+#[cfg(target_os = "macos")]
 fn first_string_literal_after(s: &str) -> Option<String> {
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -284,6 +289,7 @@ fn first_string_literal_after(s: &str) -> Option<String> {
 /// Detect native (non-shell) permanent-destruction verbs. Returns the matched
 /// token for use in the refusal message. Deliberately narrow: Finder `delete`
 /// moves to Trash and is intentionally NOT matched.
+#[cfg(target_os = "macos")]
 fn detect_native_destruction_verb(script: &str) -> Option<&'static str> {
     let lower = script.to_ascii_lowercase();
     const VERBS: [&str; 5] = [
@@ -312,12 +318,12 @@ fn detect_native_destruction_verb(script: &str) -> Option<&'static str> {
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod sec02_scripting_gate_tests {
     //! SEC-02: `macos_computer_use` scripting (`run_applescript`/`run_jxa`) must
     //! route embedded shell payloads through the shipped #604 gate and flag
     //! native permanent-destruction verbs. These tests are pure logic (no
-    //! osascript), so they run on any platform.
+    //! osascript), so they run wherever the gate itself compiles (macOS).
     use super::*;
 
     #[test]
