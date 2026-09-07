@@ -90,6 +90,8 @@ pub enum ProviderChoice {
     Fireworks,
     #[value(alias = "novita-ai", alias = "novita.ai")]
     Novita,
+    #[value(alias = "orca-router")]
+    Orcarouter,
     #[value(alias = "minimax-ai", alias = "minimaxi")]
     Minimax,
     #[value(alias = "x.ai", alias = "x-ai", alias = "grok")]
@@ -180,6 +182,7 @@ impl ProviderChoice {
             Self::Deepinfra => "deepinfra",
             Self::Fireworks => "fireworks",
             Self::Novita => "novita",
+            Self::Orcarouter => "orcarouter",
             Self::Minimax => "minimax",
             Self::Xai => "xai",
             Self::GrokBuild => "grok-build",
@@ -338,6 +341,10 @@ const PROVIDER_CHOICE_LOGIN_PROVIDERS: &[(ProviderChoice, LoginProviderDescripto
     (
         ProviderChoice::Novita,
         crate::provider_catalog::NOVITA_LOGIN_PROVIDER,
+    ),
+    (
+        ProviderChoice::Orcarouter,
+        crate::provider_catalog::ORCAROUTER_LOGIN_PROVIDER,
     ),
     (
         ProviderChoice::Minimax,
@@ -1595,6 +1602,7 @@ async fn init_provider_with_options(
         | ProviderChoice::Deepinfra
         | ProviderChoice::Fireworks
         | ProviderChoice::Novita
+        | ProviderChoice::Orcarouter
         | ProviderChoice::Minimax
         | ProviderChoice::Xai
         | ProviderChoice::NvidiaNim
