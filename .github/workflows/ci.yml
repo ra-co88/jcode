@@ -1,5 +1,8 @@
 name: CI
 
+env:
+  JCODE_CI: "1"
+
 on:
   push:
     branches: [main, master, fix/ci-debt-cleanup]
@@ -11,7 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  JCODE_CI: "1"
   CARGO_TERM_COLOR: always
   SCCACHE_GHA_ENABLED: "true"
 
@@ -27,13 +29,7 @@ jobs:
           submodules: recursive
 
       - name: Configure SSH for cargo git dependencies
-        # The cargo git deps are public HTTPS repos; the deploy key only
-        # avoids API rate limits on the origin repo. Forks without the
-        # secret fall back to anonymous HTTPS and still build.
         uses: webfactory/ssh-agent@v0.9.0
-        if: env.DEPLOY_KEY != ''
-        env:
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         with:
           ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
@@ -159,11 +155,7 @@ jobs:
           submodules: recursive
 
       - name: Configure SSH for cargo git dependencies
-        # See the quality job: optional on forks without the deploy key.
         uses: webfactory/ssh-agent@v0.9.0
-        if: env.DEPLOY_KEY != ''
-        env:
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         with:
           ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
@@ -403,11 +395,7 @@ jobs:
           submodules: recursive
 
       - name: Configure SSH for cargo git dependencies
-        # See the quality job: optional on forks without the deploy key.
         uses: webfactory/ssh-agent@v0.9.0
-        if: env.DEPLOY_KEY != ''
-        env:
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         with:
           ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
@@ -660,11 +648,7 @@ jobs:
           submodules: recursive
 
       - name: Configure SSH for cargo git dependencies
-        # See the quality job: optional on forks without the deploy key.
         uses: webfactory/ssh-agent@v0.9.0
-        if: env.DEPLOY_KEY != ''
-        env:
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         with:
           ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
