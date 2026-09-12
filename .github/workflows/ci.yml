@@ -5,7 +5,7 @@ env:
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, fix/ci-debt-cleanup]
   pull_request:
     branches: [main, master]
 
