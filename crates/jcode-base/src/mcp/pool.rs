@@ -429,6 +429,10 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+    )]
     async fn issue_790_reload_reuses_default_config_directory() {
         let _guard = crate::storage::lock_test_env();
         let original_cwd = std::env::current_dir().expect("current cwd");

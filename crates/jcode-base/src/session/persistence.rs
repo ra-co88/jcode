@@ -387,6 +387,9 @@ impl Session {
         // id find no file and silently treat the session as missing.
         // Parent linkage is also explicit state: an empty fork carries only a
         // hidden fork notice but must be loadable when its new client attaches.
+        // The debug flag is explicit state too: a debug-socket create_session
+        // marks the session before any conversation exists and the caller
+        // loads the file right after to verify the mark.
         if !self.persist_state.snapshot_exists
             && !self
                 .messages
@@ -396,6 +399,7 @@ impl Session {
             && self.custom_title.is_none()
             && self.title.is_none()
             && self.parent_id.is_none()
+            && !self.is_debug
         {
             return Ok(());
         }

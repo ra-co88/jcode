@@ -140,6 +140,10 @@ fn a_config_write_that_breaks_toml_syntax_is_reported_loudly() {
 
 /// End-to-end through the real `write` tool: the path an agent actually takes
 /// when a user says "change this setting".
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 #[tokio::test]
 async fn the_write_tool_reports_config_changes_end_to_end() {
     use crate::tool::{Tool, ToolContext};
@@ -194,6 +198,10 @@ async fn the_write_tool_reports_config_changes_end_to_end() {
 
 /// `apply_patch` reaches config.toml through its own write paths, so it gets
 /// the same report as write/edit.
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 #[tokio::test]
 async fn apply_patch_reports_config_changes() {
     use crate::tool::{Tool, ToolContext};

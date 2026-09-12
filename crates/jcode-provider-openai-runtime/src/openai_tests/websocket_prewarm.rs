@@ -42,6 +42,10 @@ async fn wait_for_prewarm(slot: &openai_websocket_prewarm::PrewarmSlot) {
     .expect("prewarm should become ready");
 }
 
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 #[tokio::test]
 async fn websocket_v2_prewarm_is_adopted_by_complete_without_losing_request_state() {
     let _lock = jcode_base::storage::lock_test_env();
@@ -57,6 +61,9 @@ async fn websocket_v2_prewarm_is_adopted_by_complete_without_losing_request_stat
         let (stream, _) = listener.accept().await.expect("accept prewarm connection");
         let mut socket = tokio_tungstenite::accept_hdr_async(
             stream,
+            // The Err type is the handshake Response forced by accept_hdr_async's
+            // callback contract; boxing it is not worth diverging from the API.
+            #[expect(clippy::result_large_err)]
             |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
              response: tokio_tungstenite::tungstenite::handshake::server::Response| {
                 assert_eq!(request.uri().path(), "/v1/responses");
@@ -204,6 +211,10 @@ async fn websocket_v2_prewarm_is_adopted_by_complete_without_losing_request_stat
     server.await.expect("local websocket server");
 }
 
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 #[tokio::test]
 async fn unfinished_or_incompatible_prewarm_is_cancelled_without_foreground_wait() {
     let _lock = jcode_base::storage::lock_test_env();
@@ -245,6 +256,10 @@ async fn unfinished_or_incompatible_prewarm_is_cancelled_without_foreground_wait
     server.await.expect("unfinished server");
 }
 
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 #[tokio::test]
 async fn ready_prewarm_with_different_settings_is_invalidated() {
     let _lock = jcode_base::storage::lock_test_env();
@@ -280,6 +295,10 @@ async fn ready_prewarm_with_different_settings_is_invalidated() {
     server.await.expect("settings mismatch server");
 }
 
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 #[tokio::test]
 async fn rejected_warmup_is_not_adopted() {
     let _lock = jcode_base::storage::lock_test_env();

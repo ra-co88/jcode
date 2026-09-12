@@ -225,18 +225,18 @@ pub fn build_todo_ownership_continuation_message(todos: &[TodoItem], goals: &[To
             ));
             continue;
         };
-        if !goal
+        if goal
             .delivery_state
-            .is_some_and(|state| state >= required_delivery_state(goal.difficulty))
+            .is_none_or(|state| state < required_delivery_state(goal.difficulty))
         {
             message.push_str(&format!(
                 "\n- Goal \"{}\": carry the work through the complete workflow.",
                 label
             ));
         }
-        if !goal
+        if goal
             .autonomy
-            .is_some_and(|state| state >= Autonomy::NecessaryFollowthrough)
+            .is_none_or(|state| state < Autonomy::NecessaryFollowthrough)
         {
             message.push_str(&format!(
                 "\n- Goal \"{}\": take ownership of the necessary follow-through.",
@@ -277,10 +277,10 @@ pub fn build_todo_ownership_continuation_message(todos: &[TodoItem], goals: &[To
                     | IterationMaturity::ConstraintsExhausted
                     | IterationMaturity::BudgetExhausted
             )
-        ) && !goal
+        ) && goal
             .stopping_evidence
             .as_deref()
-            .is_some_and(|evidence| !evidence.trim().is_empty())
+            .is_none_or(|evidence| evidence.trim().is_empty())
         {
             message.push_str(&format!(
                 "\n- Goal \"{}\": gather more evidence about whether the work should stop.",

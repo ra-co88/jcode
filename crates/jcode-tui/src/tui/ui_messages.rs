@@ -1651,13 +1651,13 @@ fn render_todo_plan_update(
             .as_ref()
             .and_then(|plan| plan.understands_user_intent),
     );
-    if !update
+    if !(update
         .fields
         .contains(&crate::todo::TodoPlanField::UnderstandsUserIntent)
-        && !(intent_is_unclear
+        || (intent_is_unclear
             && update
                 .fields
-                .contains(&crate::todo::TodoPlanField::UserIntention))
+                .contains(&crate::todo::TodoPlanField::UserIntention)))
     {
         return Vec::new();
     }

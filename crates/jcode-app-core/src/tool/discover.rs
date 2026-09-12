@@ -2776,6 +2776,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+    )]
     #[tokio::test]
     async fn execute_records_off_catalog_selection_without_provider_information() {
         let _guard = crate::storage::lock_test_env();
@@ -2835,6 +2839,10 @@ mod tests {
         crate::config::Config::invalidate_cache();
     }
 
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+    )]
     #[tokio::test]
     async fn details_executes_through_public_tool_interface() {
         let _guard = crate::storage::lock_test_env();
@@ -2906,6 +2914,10 @@ mod tests {
         crate::config::Config::invalidate_cache();
     }
 
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+    )]
     #[tokio::test]
     async fn git_category_executes_end_to_end_with_enabled_config_and_local_server() {
         let _guard = crate::storage::lock_test_env();

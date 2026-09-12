@@ -498,6 +498,10 @@ mod tests {
     /// Issue #491 regression: project-scoped remember followed by list must
     /// round-trip through the real (non-test-mode) manager when the tool
     /// context carries a working dir.
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+    )]
     #[tokio::test]
     async fn project_scope_round_trips_with_working_dir() {
         let _guard = crate::storage::lock_test_env();
@@ -552,6 +556,10 @@ mod tests {
     ///
     /// Driving `Tool::execute` (rather than inspecting a flag) means this stays
     /// honest even if the internals are refactored.
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+    )]
     #[tokio::test]
     async fn swarm_worker_memory_sees_the_spawning_session_only_without_isolation() {
         let _guard = crate::storage::lock_test_env();

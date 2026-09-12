@@ -1668,6 +1668,10 @@ mod tests {
     /// ungrouped goal unconditionally (not only as a group header), so an
     /// ungrouped goal left over from a previous flat todo list is exactly what
     /// the reporter saw frozen in the panel.
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+    )]
     #[tokio::test]
     async fn an_ungrouped_goal_does_not_survive_into_a_grouped_next_task() {
         let _guard = crate::storage::lock_test_env();
@@ -1731,6 +1735,10 @@ mod tests {
     /// Issue #695, end to end through the real tool: finish task one, then
     /// start task two. What the todos panel renders (stored todos + goals) must
     /// describe task two only, with no leftovers from task one.
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+    )]
     #[tokio::test]
     async fn moving_to_a_new_task_replaces_what_the_todos_panel_shows() {
         let _guard = crate::storage::lock_test_env();
@@ -1812,6 +1820,10 @@ mod tests {
     /// A first plan write with honestly-moderate scores must come back clean:
     /// this is the exact case that previously returned two nudges and spent the
     /// turn re-justifying the plan instead of doing the work.
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+    )]
     #[tokio::test]
     async fn a_moderate_first_write_returns_no_continuation_and_records_instead() {
         let _guard = crate::storage::lock_test_env();
@@ -1941,6 +1953,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+    )]
     #[tokio::test]
     async fn low_ownership_completion_is_saved_without_mid_write_rejection() {
         let _guard = crate::storage::lock_test_env();
@@ -2025,7 +2041,7 @@ mod tests {
             ..before.clone()
         };
 
-        let changes = goal_changes(&[before.clone()], &[after.clone()]);
+        let changes = goal_changes(std::slice::from_ref(&before), std::slice::from_ref(&after));
 
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].before.as_ref(), Some(&before));

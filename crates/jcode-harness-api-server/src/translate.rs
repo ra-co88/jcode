@@ -84,6 +84,10 @@ use serde_json::{Value, json};
 
 /// Where a translated client request should go.
 #[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Reply(ServerFrame) outclasses Legacy(Value), but boxing every reply would touch every construction and match site on a hot translation path for no functional gain"
+)]
 pub enum Outbound {
     /// Forward to the legacy daemon connection.
     Legacy(Value),
@@ -1543,9 +1547,9 @@ impl BridgeState {
             if let ApiEvent::Attached { session } | ApiEvent::SessionForked { session } =
                 &mut frame.event
             {
-                jcode_harness_api::enrich_sessions_from_local_swarm_state(
-                    std::slice::from_mut(session),
-                );
+                jcode_harness_api::enrich_sessions_from_local_swarm_state(std::slice::from_mut(
+                    session,
+                ));
             }
         }
         frames
@@ -1717,7 +1721,11 @@ impl BridgeState {
             .windows(needle.len())
             .enumerate()
             .filter_map(|(at, window)| (window == needle.as_bytes()).then_some(at + needle.len()));
-        let start = if last { starts.last()? } else { starts.next()? };
+        let start = if last {
+            starts.next_back()?
+        } else {
+            starts.next()?
+        };
         Option::<String>::deserialize(&mut serde_json::Deserializer::from_slice(&bytes[start..]))
             .ok()
             .flatten()
@@ -1931,7 +1939,7 @@ impl BridgeState {
                 .flat_map(|handle| handle.join().unwrap_or_default())
                 .collect::<Vec<_>>()
         });
-        ids.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+        ids.sort_unstable_by_key(|left| std::cmp::Reverse(left.0));
         Self::write_bootstrap_recent_session_index(&ids);
         if let Some(limit) = limit {
             ids.truncate(limit);

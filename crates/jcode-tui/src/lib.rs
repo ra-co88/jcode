@@ -5,6 +5,9 @@
     clippy::unnecessary_sort_by,
     clippy::useless_conversion
 )]
+// `copy_to_clipboard_osc52` is real remote-session clipboard code reached via
+// `#[cfg(not(test))]` paths; in a *test* build its callers are compiled out.
+#![cfg_attr(test, allow(dead_code))]
 
 //! Presentation layer for jcode (terminal UI + offline replay export).
 //!

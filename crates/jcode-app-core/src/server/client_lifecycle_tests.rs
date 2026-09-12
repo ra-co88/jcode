@@ -194,6 +194,10 @@ async fn busy_agent_request_rejection_does_not_wait_for_agent_lock() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 async fn context_message_persists_without_starting_turn() {
     let _guard = crate::storage::lock_test_env();
     let _env = IsolatedReloadRecoveryEnv::new();
@@ -989,6 +993,10 @@ fn reload_starting_rejects_new_turn_without_spawning_processing_task() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attachments() {
     let _guard = crate::storage::lock_test_env();
     let _runtime = IsolatedRuntimeDir::new();
