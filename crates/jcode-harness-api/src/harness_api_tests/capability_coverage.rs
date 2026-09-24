@@ -50,6 +50,8 @@ const LEDGER: &[(&str, Disposition)] = &[
     ("GetCompactedHistory", ClientInternal),
     ("GetHistory", Covered),
     ("GetModelCatalog", Covered),
+    // Create/attach session bootstrap requests state through the API bridge.
+    ("GetState", Covered),
     ("InputShell", ClientInternal),
     ("Message", Covered),
     ("NotifyAuthChanged", Covered),
@@ -68,6 +70,10 @@ const LEDGER: &[(&str, Disposition)] = &[
     ("SetReasoningEffort", Covered),
     ("SetRoute", ClientInternal),
     ("SetServiceTier", ClientInternal),
+    (
+        "SetSessionSaved",
+        Gap("clients can read a session's saved flag but cannot pin or unpin it"),
+    ),
     ("SetSubagentModel", ClientInternal),
     ("SetTransport", ClientInternal),
     ("SoftInterrupt", Covered),
@@ -76,6 +82,7 @@ const LEDGER: &[(&str, Disposition)] = &[
     ("Subscribe", Covered),
     ("SwitchAnthropicAccount", ClientInternal),
     ("SwitchOpenAiAccount", ClientInternal),
+    ("InvalidateOpenAiUsage", Covered),
     ("Transcript", ClientInternal),
     ("Transfer", ClientInternal),
     ("TriggerMemoryExtraction", ClientInternal),
@@ -85,7 +92,8 @@ const LEDGER: &[(&str, Disposition)] = &[
 fn reference_client_requests() -> BTreeSet<String> {
     let mut found = BTreeSet::new();
     {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../jcode-tui/src");
+        let dir = "../jcode-tui/src";
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
         collect_requests(&root, &mut found);
     }
     // covered by construction and would otherwise pollute the diff.

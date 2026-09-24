@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 fn session(id: &str) -> SessionInfo {
     SessionInfo {
+        edit_stats: None,
         parent_session_id: (id == "persisted-2").then(|| "persisted-1".into()),
         agent_label: (id == "persisted-2").then(|| "API reviewer".into()),
         swarm_status: (id == "persisted-2").then(|| "running".into()),
@@ -32,6 +33,7 @@ fn session(id: &str) -> SessionInfo {
         last_active_at_ms: None,
         archived: false,
         archived_at_ms: None,
+        save_label: None,
     }
 }
 
@@ -219,6 +221,7 @@ fn serve_connection(
                 for index in 0..events_per_attach {
                     push(
                         ApiEvent::TextDelta {
+                            message_id: None,
                             session_id: session_id.clone(),
                             text: format!("{session_id}-{index}"),
                         },

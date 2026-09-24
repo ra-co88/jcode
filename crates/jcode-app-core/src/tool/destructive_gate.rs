@@ -28,7 +28,14 @@ pub(crate) fn destructive_command_refusal_labeled(
     working_dir: Option<std::path::PathBuf>,
     caller: &str,
 ) -> Option<String> {
-    let risk_ctx = jcode_command_risk::RiskContext::from_env(working_dir);
+    let mut risk_ctx = jcode_command_risk::RiskContext::from_env(working_dir);
+    // Assess the same scratch path that the child shell actually receives
+    // (upstream b0643ce69): without this, a `rm -rf` aimed at the tool's
+    // scratch directory slips past the gate's scratch-path special-casing.
+    #[cfg(not(windows))]
+    {
+        risk_ctx.scratch_dir = super::bash::tool_scratch_dir();
+    }
     let assessment = jcode_command_risk::assess(command, &risk_ctx);
     if assessment.level.runs_immediately() {
         return None;
