@@ -158,30 +158,6 @@ mod diff_display_mode_tests {
     }
 }
 
-/// When to show the overscroll status line (model/provider/context info below
-/// the input).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OverscrollStatusMode {
-    /// Never show the status line.
-    Off,
-    /// Always show the status line below the input (default).
-    #[default]
-    On,
-    /// Elastic reveal: show it briefly when scrolling past the bottom.
-    Overscroll,
-}
-
-impl OverscrollStatusMode {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::On => "on",
-            Self::Overscroll => "overscroll",
-        }
-    }
-}
-
 /// How to display mermaid diagrams.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1070,6 +1046,8 @@ pub struct KeybindingsConfig {
     pub copy_selection_toggle: String,
     /// Toggle the diagram pane position (default: "alt+t")
     pub diagram_pane_toggle: String,
+    /// Show/hide the pinned diagram pane (default: "alt+shift+m")
+    pub diagram_pane_visibility_toggle: String,
     /// Toggle typing scroll lock (default: "alt+s")
     pub typing_scroll_lock_toggle: String,
     /// Cycle inline diff display mode (default: "alt+g")
@@ -1090,6 +1068,9 @@ pub struct KeybindingsConfig {
     /// Open the `/resume` session picker (default: "cmd+b" on macOS, "alt+r"
     /// elsewhere). Set "" to disable.
     pub open_resume: String,
+    /// Start/stop built-in voice input (default: "ctrl+space"). Speech streams
+    /// to Nari and the transcript is sent as a prompt. Set "" to disable.
+    pub voice_input: String,
     /// Session picker Enter action: "current-terminal" (default) or "new-terminal".
     /// Ctrl+Enter performs the alternate action.
     pub session_picker_enter: SessionPickerResumeAction,
@@ -1128,6 +1109,7 @@ impl Default for KeybindingsConfig {
             side_panel_toggle: get("side_panel_toggle", "alt+m"),
             copy_selection_toggle: get("copy_selection_toggle", "alt+y"),
             diagram_pane_toggle: get("diagram_pane_toggle", "alt+t"),
+            diagram_pane_visibility_toggle: get("diagram_pane_visibility_toggle", "alt+shift+m"),
             typing_scroll_lock_toggle: get("typing_scroll_lock_toggle", "alt+s"),
             diff_mode_cycle: get("diff_mode_cycle", "alt+g"),
             info_widget_toggle: get("info_widget_toggle", "alt+i"),
@@ -1142,6 +1124,7 @@ impl Default for KeybindingsConfig {
                     "alt+r"
                 },
             ),
+            voice_input: get("voice_input", "ctrl+space"),
             session_picker_enter: SessionPickerResumeAction::CurrentTerminal,
         }
     }
@@ -1595,12 +1578,22 @@ pub struct PowerConfig {
     /// Honored by the shared `jcode serve` daemon. The `JCODE_DISABLE_POWER_INHIBIT`
     /// environment variable forces this off regardless of the config value.
     pub prevent_sleep_while_streaming: bool,
+
+    /// Also keep working when the lid closes on macOS and Windows while a
+    /// session is streaming. Linux always blocks lid-close suspend as part of
+    /// `prevent_sleep_while_streaming`. On Windows jcode temporarily sets the
+    /// active power plan's lid close action to "Do nothing". On macOS it runs
+    /// `sudo -n pmset -a disablesleep 1`, which requires a passwordless sudoers
+    /// rule and is skipped otherwise. Original settings are journaled and
+    /// restored when work finishes, including after a crash. Default: true.
+    pub block_lid_close: bool,
 }
 
 impl Default for PowerConfig {
     fn default() -> Self {
         Self {
             prevent_sleep_while_streaming: true,
+            block_lid_close: true,
         }
     }
 }

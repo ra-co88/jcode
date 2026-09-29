@@ -14,7 +14,6 @@ use jcode_tui_style::palette::role_for_rendered;
 use ratatui::style::Color;
 use std::collections::BTreeMap;
 
-/// Per-role rendered area, plus tallies of adjacent role pairs.
 type RoleAreas = BTreeMap<&'static str, u32>;
 type RoleAdjacency = BTreeMap<(&'static str, &'static str), u32>;
 

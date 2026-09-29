@@ -529,6 +529,15 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
+    if app
+        .toggle_keys
+        .diagram_pane_visibility
+        .matches(code, modifiers)
+    {
+        app.toggle_diagram_pane();
+        return Ok(());
+    }
+
     if app.toggle_keys.side_panel.matches(code, modifiers) {
         app.toggle_side_panel();
         return Ok(());

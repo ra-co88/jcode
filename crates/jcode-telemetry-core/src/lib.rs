@@ -33,7 +33,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(test))]
 use std::sync::mpsc::TrySendError;
 use std::sync::mpsc::{SyncSender, sync_channel};
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const TELEMETRY_ENDPOINT: &str = "https://telemetry.jcode.sh/v1/event";
