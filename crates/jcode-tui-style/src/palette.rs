@@ -327,6 +327,51 @@ pub fn palette() -> Palette {
     .unwrap_or_default()
 }
 
+/// Avoid locking/copying the palette on the default render path.
+pub(crate) fn configured_palette() -> Option<Palette> {
+    HAS_OVERRIDES.load(Ordering::Relaxed).then(palette)
+}
+
+/// Resolve an override from the original, native-palette color, before light
+/// contrast repair can collapse two distinct muted roles to the same ink.
+///
+/// A color is attributed only when it *is* a role's default (or a named color
+/// with a role), so an override can never recolor a color some other role
+/// carries. Ad hoc `rgb(...)` literals are unattributed and returned as-is:
+/// give a shade a role if it should follow `/colors`.
+pub(crate) fn configured_native_color(palette: &Palette, color: Color) -> Option<Color> {
+    let rgb = match color {
+        Color::Reset => return None,
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Indexed(index) => crate::color::indexed_to_rgb(index),
+        named => {
+            let mapped = remap_named_with(palette, named);
+            return (mapped != named).then_some(mapped);
+        }
+    };
+    // Only the role whose own default this is may claim it.
+    //
+    // On a 256-color terminal the default was rendered through `color::rgb`,
+    // which quantizes it to an xterm index. Dequantizing that index rarely gives
+    // back the original default, so indexed cells are matched in index space
+    // instead (#1663). `is_overridden` is checked first so a single override
+    // still wins when two defaults share an index.
+    let role = ALL_ROLES.iter().copied().find(|role| {
+        if !palette.is_overridden(*role) {
+            return false;
+        }
+        let (r, g, b) = role.default_rgb();
+        match color {
+            Color::Indexed(index) => {
+                role.default_rgb() == rgb || crate::color::rgb_to_xterm256(r, g, b) == index
+            }
+            _ => role.default_rgb() == rgb,
+        }
+    })?;
+    let (r, g, b) = palette.rgb(role);
+    Some(crate::color::rgb(r, g, b))
+}
+
 /// Resolve a role to a renderable color.
 ///
 /// This deliberately returns the role's *default* color, not the configured
@@ -638,6 +683,37 @@ mod tests {
         // A blue is nowhere near amber and must be left alone.
         let blue = (60, 90, 220);
         assert_eq!(remap_literal_with(&palette, blue), blue);
+    }
+
+    /// On a 256-color terminal a role default reaches the buffer as the
+    /// quantized xterm index, which rarely dequantizes back to the default.
+    /// The override must still be applied (#1663).
+    #[test]
+    fn quantized_role_defaults_follow_an_override() {
+        let mut overridden = 0;
+        for role in ALL_ROLES.iter().copied() {
+            let mut palette = Palette::default();
+            palette.set(role, (1, 2, 3));
+            let (r, g, b) = role.default_rgb();
+            let quantized = Color::Indexed(crate::color::rgb_to_xterm256(r, g, b));
+            assert_eq!(
+                configured_native_color(&palette, quantized),
+                Some(crate::color::rgb(1, 2, 3)),
+                "{} override dropped for its quantized default",
+                role.key()
+            );
+            overridden += 1;
+        }
+        assert_eq!(overridden, ALL_ROLES.len());
+        // Unconfigured palettes still attribute nothing.
+        let (r, g, b) = Role::Warning.default_rgb();
+        assert_eq!(
+            configured_native_color(
+                &Palette::default(),
+                Color::Indexed(crate::color::rgb_to_xterm256(r, g, b))
+            ),
+            None
+        );
     }
 
     #[test]

@@ -681,9 +681,9 @@ async fn read_response(
         bail!("Jev returned HTTP {}: {hint}", status.as_u16());
     }
     ensure!(
-        !response
+        response
             .content_length()
-            .is_some_and(|length| length > limit as u64),
+            .is_none_or(|length| length <= limit as u64),
         "Jev response exceeds the bounded response size"
     );
     let mut bytes = Vec::new();

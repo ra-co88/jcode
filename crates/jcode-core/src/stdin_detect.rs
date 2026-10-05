@@ -330,7 +330,7 @@ mod macos {
         let num_threads = ret as usize / mem::size_of::<u64>();
 
         // Check each thread's state
-        for &thread_id in &thread_ids[..num_threads] {
+        for &thread_id in thread_ids.iter().take(num_threads) {
             let mut tinfo: proc_threadinfo = unsafe { mem::zeroed() };
             let ret = unsafe {
                 proc_pidinfo(

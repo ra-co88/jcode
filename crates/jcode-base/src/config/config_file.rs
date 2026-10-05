@@ -158,6 +158,11 @@ impl Config {
         config
     }
 
+    /// Persist the Anthropic cache duration for clients and the shared daemon.
+    pub fn set_anthropic_cache_ttl_1h(enabled: bool) -> anyhow::Result<()> {
+        Self::mutate(|cfg| cfg.provider.anthropic_cache_ttl_1h = enabled)
+    }
+
     /// Load config from file, with environment variable overrides.
     ///
     /// Unlike [`Self::load`], this returns TOML/read errors to callers that need
@@ -264,7 +269,6 @@ impl Config {
         match toml::from_str::<Self>(&content) {
             Ok(mut cfg) => {
                 cfg.display.apply_legacy_compat();
-                cfg.repair_frozen_sponsors_optout(&content);
                 crate::logging::warn(&format!(
                     "config.toml was unreadable; recovered last-good settings from {}.",
                     snapshot.display()
@@ -323,47 +327,7 @@ impl Config {
             anyhow::anyhow!("Failed to parse config file {}: {}", path.display(), e)
         })?;
         config.display.apply_legacy_compat();
-        config.repair_frozen_sponsors_optout(&content);
         Ok(Some(config))
-    }
-
-    /// Undo a machine-frozen partner-discovery opt-out.
-    ///
-    /// Discovery shipped opt-in (`enabled = false`), and because [`Self::save`]
-    /// serializes the whole struct, any config write during that window baked
-    /// the old default into the user's file. Those users keep discovery
-    /// permanently disabled even after the default flipped to opt-out, and
-    /// telemetry shows this is the single largest discovery blocker.
-    ///
-    /// A machine-written section is exactly `enabled` plus `endpoint` with a
-    /// known default endpoint. A hand-written opt-out (`enabled = false` alone,
-    /// or paired with a custom endpoint) is always respected. Repair happens in
-    /// memory only; the section then disappears on the next save because it
-    /// serializes back to the default.
-    pub(crate) fn repair_frozen_sponsors_optout(&mut self, raw: &str) {
-        if self.sponsors.enabled {
-            return;
-        }
-        let Ok(doc) = raw.parse::<toml::Value>() else {
-            return;
-        };
-        let Some(table) = doc.get("sponsors").and_then(toml::Value::as_table) else {
-            return;
-        };
-        let machine_written = table.len() == 2
-            && table.get("enabled").and_then(toml::Value::as_bool) == Some(false)
-            && table
-                .get("endpoint")
-                .and_then(toml::Value::as_str)
-                .is_some_and(super::is_default_discovery_endpoint);
-        if !machine_written {
-            return;
-        }
-        self.sponsors = SponsorsConfig::default();
-        crate::logging::info(
-            "config: restored integration discovery default (legacy opt-in value was frozen by an \
-             earlier config save)",
-        );
     }
 
     /// Save config to file.
@@ -427,6 +391,16 @@ impl Config {
         // lock cannot be taken we proceed (never worse than before, and the
         // atomic rename still prevents a torn file).
         let _flock = ConfigFileLock::acquire();
+        // Fail closed on an unparseable file: a write path that silently
+        // overwrote a hand-edited (broken) config with recovered defaults
+        // would destroy whatever the user was in the middle of editing.
+        // Reads keep the REL-02 last-good recovery; only writes fail here.
+        if let Err(e) = Self::load_from_file_strict() {
+            return Err(anyhow::anyhow!(
+                "refusing to write config: the file on disk does not parse ({e}). \
+                 Fix or remove config.toml and retry.",
+            ));
+        }
         // Load fresh from disk INSIDE both locks so we never mutate a stale copy.
         let mut cfg = Self::load();
         if f(&mut cfg) {

@@ -173,10 +173,10 @@ pub fn recent_external_transcripts_in(home: &Path, limit: usize) -> Vec<Transcri
 fn is_top_level_cursor_transcript(path: &Path) -> bool {
     path.components()
         .any(|part| part.as_os_str() == "agent-transcripts")
-        && !path
+        && path
             .parent()
             .and_then(|dir| dir.file_name())
-            .is_some_and(|name| name == "subagents")
+            .is_none_or(|name| name != "subagents")
 }
 
 fn clip(text: &str, max: usize) -> String {
