@@ -1,9 +1,10 @@
 {
-  "total": 163,
+  "total": 164,
   "tracked_files": {
     "crates/jcode-app-core/build.rs": 4,
     "crates/jcode-app-core/src/agent/provider.rs": 1,
     "crates/jcode-app-core/src/agent/tool_markup_recovery.rs": 2,
+    "crates/jcode-app-core/src/server/client_actions.rs": 1,
     "crates/jcode-app-core/src/session_launch.rs": 1,
     "crates/jcode-app-core/src/tool/bash.rs": 2,
     "crates/jcode-app-core/src/tool/browser.rs": 2,

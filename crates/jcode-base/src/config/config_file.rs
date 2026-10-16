@@ -435,9 +435,7 @@ impl Config {
 
     /// Persist the Anthropic cache duration for clients and the shared daemon.
     pub fn set_anthropic_cache_ttl_1h(enabled: bool) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.provider.anthropic_cache_ttl_1h = enabled;
-        cfg.save()
+        Self::mutate(|cfg| cfg.provider.anthropic_cache_ttl_1h = enabled)
     }
 
     /// Update the copilot premium mode in the config file.
@@ -483,8 +481,7 @@ impl Config {
 
     /// Update just the default model in the config file.
     pub fn set_default_model_only(model: Option<&str>) -> anyhow::Result<()> {
-        let cfg = Self::load_for_update()?;
-        Self::set_default_model(model, cfg.provider.default_provider.as_deref())
+        Self::mutate(|cfg| cfg.provider.default_model = model.map(|s| s.to_string()))
     }
 
     /// Update the persisted OpenAI reasoning effort preference.
@@ -537,9 +534,7 @@ impl Config {
 
     /// Update the persisted default alignment preference.
     pub fn set_display_centered(centered: bool) -> anyhow::Result<()> {
-        let mut cfg = Self::load_for_update()?;
-        cfg.display.centered = centered;
-        cfg.save()?;
+        Self::mutate(|cfg| cfg.display.centered = centered)?;
         crate::logging::info(&format!("Saved display.centered to config: {}", centered));
         Ok(())
     }
