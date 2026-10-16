@@ -1,8 +1,8 @@
 {
-  "total": 3714,
+  "total": 3717,
   "totals_by_pattern": {
-    "dot_ok": 1429,
-    "let_underscore": 1355,
+    "dot_ok": 1431,
+    "let_underscore": 1356,
     "unwrap_or_default": 930
   },
   "tracked_files": {
@@ -422,7 +422,7 @@
       "unwrap_or_default": 4
     },
     "crates/jcode-app-core/src/tool/apply_patch.rs": {
-      "dot_ok": 3,
+      "dot_ok": 4,
       "let_underscore": 1,
       "unwrap_or_default": 0
     },
@@ -592,7 +592,7 @@
       "unwrap_or_default": 11
     },
     "crates/jcode-app-core/src/tool/webfetch.rs": {
-      "dot_ok": 3,
+      "dot_ok": 4,
       "let_underscore": 0,
       "unwrap_or_default": 0
     },
@@ -2203,7 +2203,7 @@
     },
     "crates/jcode-tui/src/tui/app/remote/key_handling.rs": {
       "dot_ok": 0,
-      "let_underscore": 17,
+      "let_underscore": 18,
       "unwrap_or_default": 10
     },
     "crates/jcode-tui/src/tui/app/remote/reconnect.rs": {

@@ -173,7 +173,7 @@ fn schedule_retry(socket: &Path, candidate: &Path) {
     }
     drop(pending);
     let cleanup_key = key.clone();
-    if std::thread::Builder::new()
+    if let Err(spawn_error) = std::thread::Builder::new()
         .name("jcode-idle-upgrade".into())
         .spawn(move || {
             match retry_until_idle(&key.0, &key.1, 20, Duration::from_secs(30)) {
@@ -192,11 +192,11 @@ fn schedule_retry(socket: &Path, candidate: &Path) {
                 pending.remove(&key);
             }
         })
-        .is_err()
     {
         if let Ok(mut pending) = PENDING.lock() {
             pending.remove(&cleanup_key);
         }
+        eprintln!("jcode runtime: idle upgrade check could not start: {spawn_error}");
     }
 }
 

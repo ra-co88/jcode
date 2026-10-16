@@ -109,6 +109,10 @@ fn checkpoint_refuses_queue_write_failure_instead_of_losing_accepted_input() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process-wide test-env lock must serialize these async setup paths; that is the isolation under test"
+)]
 async fn busy_agent_checkpoint_never_waits_and_idle_index_stays_reserved() {
     let _env = crate::storage::lock_test_env();
     let _home = TestHome::new();
