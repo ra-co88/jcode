@@ -706,6 +706,11 @@ jobs:
     name: Windows Cross-Target Check (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    # Advisory while the crates.io `zip` 8.x yank breaks `cargo install
+    # cargo-xwin` resolution (xwin 0.10.0 requires zip ^8.0; every 8.x is
+    # yanked as of 2026-10). Native windows-latest build & test covers the
+    # release path. Revert to blocking once xwin publishes a fix.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
